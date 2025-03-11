@@ -1,0 +1,8 @@
+# repos:
+# -   repo: local
+#     hooks:
+#     -   id: update-requirements
+#         name: Update requirements.txt
+#         entry: "uv pip freeze \> requirements.txt"
+#         language: system
+#         pass_filenames: false
