@@ -663,8 +663,8 @@ def get_talents_from_solution(solution: dict) -> pl.DataFrame:
                 .struct.field("description")
                 .alias("talent_description"),
             ),
-            on=["talent_name", "talent_lvl"],
-            how="left",
+            by="talent_name",
+            on="talent_lvl",
         )
         .sort(["talent_lvl", "talent_name"], descending=[True, False])
     )
