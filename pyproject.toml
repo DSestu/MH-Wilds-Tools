@@ -6,9 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gradio>=5.20.1",
+    "icecream>=2.1.4",
     "ipykernel>=6.29.5",
     "ortools>=9.12.4544",
     "polars>=1.24.0",
     "pre-commit>=4.1.0",
+    "rich>=13.9.4",
     "ruff>=0.9.10",
 ]

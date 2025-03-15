@@ -2,7 +2,11 @@ from collections import defaultdict
 from itertools import pairwise
 
 import polars as pl
+from icecream import ic
 from ortools.sat.python import cp_model
+from rich import traceback
+
+traceback.install()
 
 armor = pl.read_parquet("data/armor_pieces.parquet")
 charms = pl.read_parquet("data/charms.parquet")
@@ -14,14 +18,17 @@ weapon_name = "Brisefoi Leibolkule"
 
 
 def solve(
-    weapon_name: str,
+    weapon_dict: dict,
     talent_list: list[dict],
 ) -> dict:
-    wanted_talents = {}
-    for item in talent_list:
-        wanted_talents[item["name"]] = item["weight"]
-
-    print(wanted_talents)
+    weapon_name = weapon_dict["name"]
+    ic(weapon_name)
+    ic(talent_list)
+    wanted_talents = {item["name"]: item["weight"] for item in talent_list}
+    wanted_talents_objective = {
+        item["name"]: item["target_level"] for item in talent_list
+    }
+    ic(wanted_talents)
     model = cp_model.CpModel()
     _vars = {
         "use_armor_piece_booleans": {},
@@ -29,6 +36,9 @@ def solve(
         "talent_lists": {},
         "talent_sums": {},
         "talent_sums_capped": {},
+        "talent_series_interval": {},
+        "talent_sums_final": {},
+        "group_has_enough_level": {},
         "jewel_emplacement_lists": {},
         "jewel_emplacement_sums": {},
         "jewel_emplacement_sums_total_armor": {},
@@ -260,7 +270,6 @@ def solve(
             pl.col("talents").struct.field("lvl").alias("talent_lvl"),
         )
     )
-    print(weapon)
     for row in weapon.to_dicts():
         talent_name = row["talent_name"]
         talent_lvl = row["talent_lvl"]
@@ -269,6 +278,8 @@ def solve(
             ub=30,
             name=f"weapon_talent_{talent_name}_lvl_{talent_lvl}",
         )
+        if not talent_lvl:
+            continue
         model.Add(var_talent_lvl == talent_lvl)
         # Register the variable
         if _vars["talent_lists"].get(talent_name) is None:
@@ -328,18 +339,16 @@ def solve(
 
     ## Get armor jewel types
     armor_jewel_types = jewel_types.filter(pl.col("group") == "Equip")
-    # Jewels 1
-    nb_of_uses_of_jewel1 = sum(
+
+    # Jewels 3
+    nb_of_uses_of_jewel3 = sum(
         var
-        for jewel_name, var in _vars["jewel_uses_integers"][1].items()
+        for jewel_name, var in _vars["jewel_uses_integers"][3].items()
         if jewel_name in armor_jewel_types["jewel_name"].unique().to_list()
     )
-    # Jewels 1 can fit in lvl 1, 2, 3
+    # Jewels 3 can only fit in lvl 3
     model.Add(
-        nb_of_uses_of_jewel1
-        <= sum(
-            _vars["jewel_emplacement_sums_total_armor"][f"lvl{i}"] for i in range(1, 4)
-        )
+        nb_of_uses_of_jewel3 <= _vars["jewel_emplacement_sums_total_armor"]["lvl3"]
     )
 
     # Jewels 2
@@ -354,33 +363,35 @@ def solve(
         <= sum(
             _vars["jewel_emplacement_sums_total_armor"][f"lvl{i}"] for i in range(2, 4)
         )
+        - nb_of_uses_of_jewel3
     )
-
-    # Jewels 3
-    nb_of_uses_of_jewel3 = sum(
-        var
-        for jewel_name, var in _vars["jewel_uses_integers"][3].items()
-        if jewel_name in armor_jewel_types["jewel_name"].unique().to_list()
-    )
-    # Jewels 3 can only fit in lvl 3
-    model.Add(
-        nb_of_uses_of_jewel3 <= _vars["jewel_emplacement_sums_total_armor"]["lvl3"]
-    )
-
-    ## Get weapon jewel types
-    weapon_jewel_types = jewel_types.filter(pl.col("group") == "Weapon")
     # Jewels 1
     nb_of_uses_of_jewel1 = sum(
         var
         for jewel_name, var in _vars["jewel_uses_integers"][1].items()
-        if jewel_name in weapon_jewel_types["jewel_name"].unique().to_list()
+        if jewel_name in armor_jewel_types["jewel_name"].unique().to_list()
     )
     # Jewels 1 can fit in lvl 1, 2, 3
     model.Add(
         nb_of_uses_of_jewel1
         <= sum(
-            _vars["jewel_emplacement_sums_total_weapon"][f"lvl{i}"] for i in range(1, 4)
+            _vars["jewel_emplacement_sums_total_armor"][f"lvl{i}"] for i in range(1, 4)
         )
+        - nb_of_uses_of_jewel3
+        - nb_of_uses_of_jewel2
+    )
+
+    ## Get weapon jewel types
+    weapon_jewel_types = jewel_types.filter(pl.col("group") == "Weapon")
+    # Jewels 3
+    nb_of_uses_of_jewel3 = sum(
+        var
+        for jewel_name, var in _vars["jewel_uses_integers"][3].items()
+        if jewel_name in weapon_jewel_types["jewel_name"].unique().to_list()
+    )
+    # Jewels 3 can only fit in lvl 3
+    model.Add(
+        nb_of_uses_of_jewel3 <= _vars["jewel_emplacement_sums_total_weapon"]["lvl3"]
     )
 
     # Jewels 2
@@ -395,17 +406,23 @@ def solve(
         <= sum(
             _vars["jewel_emplacement_sums_total_weapon"][f"lvl{i}"] for i in range(2, 4)
         )
+        - nb_of_uses_of_jewel3
     )
 
-    # Jewels 3
-    nb_of_uses_of_jewel3 = sum(
+    # Jewels 1
+    nb_of_uses_of_jewel1 = sum(
         var
-        for jewel_name, var in _vars["jewel_uses_integers"][3].items()
+        for jewel_name, var in _vars["jewel_uses_integers"][1].items()
         if jewel_name in weapon_jewel_types["jewel_name"].unique().to_list()
     )
-    # Jewels 3 can only fit in lvl 3
+    # Jewels 1 can fit in lvl 1, 2, 3
     model.Add(
-        nb_of_uses_of_jewel3 <= _vars["jewel_emplacement_sums_total_weapon"]["lvl3"]
+        nb_of_uses_of_jewel1
+        <= sum(
+            _vars["jewel_emplacement_sums_total_weapon"][f"lvl{i}"] for i in range(1, 4)
+        )
+        - nb_of_uses_of_jewel3
+        - nb_of_uses_of_jewel2
     )
 
     # Compute the talent sums
@@ -470,9 +487,10 @@ def solve(
         model.Add(
             _vars["talent_sums_capped"][group_talent_name] >= data["talent_lvl"]
         ).OnlyEnforceIf(group_has_enough_levels)
-        model.Add(_vars["talent_sums_capped"][group_talent_name] == 0).OnlyEnforceIf(
-            group_has_enough_levels.Not()
-        )
+        model.Add(
+            _vars["talent_sums_capped"][group_talent_name] < data["talent_lvl"]
+        ).OnlyEnforceIf(group_has_enough_levels.Not())
+        _vars["group_has_enough_level"][group_talent_name] = group_has_enough_levels
 
     # Add set series bonus talents
     talent_series = (
@@ -488,13 +506,13 @@ def solve(
         # Filter the talent series for the current series name
         unique_serie = talent_series.filter(pl.col("name") == talent_series_name)
         # Create a list of levels, starting with 0
-        levels = [0] + unique_serie.sort("talent_lvl")["talent_lvl"].to_list()
-
+        levels = [0] + unique_serie.sort("talent_lvl")["talent_lvl"].to_list() + [30]
+        _vars["talent_series_interval"][talent_series_name] = []
         # Iterate over pairs of consecutive levels
         for talent_inferior, talent_superior in pairwise(levels):
             # Create a boolean variable to check if the talent level is more than the inferior level
             var_talent_lvl_is_more_than_inferior = model.NewBoolVar(
-                name=f"talent_series_{talent_series_name}_greater_than_{talent_inferior}"
+                name=f"talent_series_{talent_series_name}_greater_than_{talent_inferior}_{talent_superior}"
             )
             # Add constraints based on the boolean variable
             model.Add(
@@ -506,7 +524,7 @@ def solve(
 
             # Create a boolean variable to check if the talent level is less than the superior level
             var_talent_lvl_is_less_than_superior = model.NewBoolVar(
-                name=f"talent_series_{talent_series_name}_less_than_{talent_superior}"
+                name=f"talent_series_{talent_series_name}_less_than_{talent_superior}_{talent_superior}"
             )
             # Add constraints based on the boolean variable
             model.Add(
@@ -541,11 +559,34 @@ def solve(
             ).only_enforce_if(var_talent_lvl_is_between.Not())
 
             # Add a constraint to set the talent level to the inferior level if the 'between' condition is met
-            model.Add(
-                _vars["talent_sums_capped"][talent_series_name] == talent_inferior
-            ).only_enforce_if(var_talent_lvl_is_between)
+            var = model.NewIntVar(
+                name=f"talent_sums_final_{talent_series_name}_interrval_{talent_inferior}_{talent_superior}",
+                lb=0,
+                ub=30,
+            )
+            _vars["talent_series_interval"][talent_series_name].append(var)
+            model.Add(var == talent_inferior).only_enforce_if(var_talent_lvl_is_between)
+            model.Add(var == 0).only_enforce_if(var_talent_lvl_is_between.Not())
 
     ## Objective
+    for name, var in _vars["talent_sums_capped"].items():
+        if name not in _vars["talent_sums_final"] and name not in talent_series_names:
+            newvar = model.NewIntVar(name=f"talent_sums_final_{name}", lb=0, ub=30)
+            _vars["talent_sums_final"][name] = newvar
+            if name in group_talent_names:
+                model.Add(_vars["talent_sums_final"][name] == var).only_enforce_if(
+                    _vars["group_has_enough_level"][name]
+                )
+                model.Add(_vars["talent_sums_final"][name] == 0).only_enforce_if(
+                    _vars["group_has_enough_level"][name].Not()
+                )
+            else:
+                model.Add(_vars["talent_sums_final"][name] == var)
+    for name, var_list in _vars["talent_series_interval"].items():
+        if name not in _vars["talent_sums_final"]:
+            newvar = model.NewIntVar(name=f"talent_sums_final_{name}", lb=0, ub=30)
+            _vars["talent_sums_final"][name] = newvar
+            model.Add(_vars["talent_sums_final"][name] == sum(var_list))
 
     # Add additionnal value for free jewels emplacements
     lvl_emplacements = {}
@@ -556,21 +597,32 @@ def solve(
 
     maximize_nb_of_free_jewels = []
     maximize_nb_of_free_jewels.extend(
-        sum(lvl_emplacements[lvl])
-        - sum(_vars["jewel_uses_integers"][lvl].values()) * 10**3 * 10**lvl
+        (sum(lvl_emplacements[lvl]) - sum(_vars["jewel_uses_integers"][lvl].values()))
+        * 10**3
+        * 10**lvl
         for lvl in range(1, 4)
     )
     # Add additional objective value for eventual addional talents (still minimize nb of jewels)
-    nb_of_talents = sum(_vars["talent_sums_capped"].values())
+    nb_of_talents = sum(_vars["talent_sums_final"].values())
 
     # Add optional strict talent optimization
     talent_objective = (
         sum(
-            _vars["talent_sums_capped"][talent] * 10**talent_weight
+            _vars["talent_sums_final"][talent] * 10**talent_weight
             for talent, talent_weight in wanted_talents.items()
         )
         * 10**9
     )
+    # Add a penalty if talent lvl is greater than the objective lvl
+    abs_diff_vars = []
+    for talent_name, talent_var in _vars["talent_sums_final"].items():
+        if talent_name in wanted_talents_objective.keys():
+            objective_lvl = wanted_talents_objective[talent_name]
+            if objective_lvl == -1:
+                continue
+            abs_diff = model.NewIntVar(name=f"abs_diff_{talent_name}", lb=0, ub=100)
+            model.AddAbsEquality(abs_diff, talent_var - objective_lvl)
+            abs_diff_vars.append(abs_diff * 10 ** wanted_talents[talent_name] * 10**9)
 
     model.maximize(
         sum(
@@ -578,6 +630,7 @@ def solve(
                 talent_objective,
                 nb_of_talents,
                 sum(maximize_nb_of_free_jewels),
+                -sum(abs_diff_vars),
             ]
         )
     )
@@ -592,13 +645,13 @@ def solve(
         cp_model.UNKNOWN: "UNKNOWN",
     }
 
-    print(f"Solver status: {solver_statuses[status]}")
+    ic(f"Solver status: {solver_statuses[status]}")
     solution = {"jewels": {}, "weapon": weapon.to_dicts()[0]["name"]}
     for armor_piece, var_dict in _vars["use_armor_piece_booleans"].items():
         for name, var in var_dict.items():
             if solver.value(var) == 1:
                 solution[armor_piece] = name
-                print(armor.filter(pl.col("name") == name))
+                # ic(armor.filter(pl.col("name") == name))
     for charm, var in _vars["use_charm_booleans"].items():
         if solver.value(expression=var) == 1:
             solution["charm"] = charm
@@ -607,6 +660,9 @@ def solve(
         for jewel_name, var in var_dict.items():
             if solver.value(var) > 0:
                 solution["jewels"][jewel_name] = solver.value(var)
+    ic(_vars["talent_sums_final"]["Tyrannie du Gore Magala"])
+    ic(_vars["talent_sums_final"]["Volonté de l'Anjanath tonnerre"])
+    ic(model.model_stats())
     return solution
 
 
@@ -653,18 +709,30 @@ def get_talents_from_solution(solution: dict) -> pl.DataFrame:
     )
     return (
         pl.DataFrame(_temp)
-        .sort("talent_lvl", descending=True)
+        .sort("talent_lvl")
         .join_asof(
-            talents.explode("levels").select(
+            talents.explode("levels")
+            .select(
                 pl.col("name").alias("talent_name"),
                 pl.col("levels").struct.field("lvl").alias("talent_lvl"),
                 pl.col("description").alias("general_description"),
                 pl.col("levels")
                 .struct.field("description")
                 .alias("talent_description"),
-            ),
+            )
+            .sort("talent_lvl"),
             by="talent_name",
             on="talent_lvl",
         )
         .sort(["talent_lvl", "talent_name"], descending=[True, False])
     )
+
+
+if __name__ == "__main__":
+    # weapon_name = {"name": "Lame d'espoir"}
+    weapon_name = weapons.filter(pl.col("name") == "Lame d'espoir").to_dicts()[0]
+    talent_list = [
+        {"name": "Tyrannie du Gore Magala", "target_level": 2, "weight": 1},
+        {"name": "Volonté de l'Anjanath tonnerre", "target_level": 2, "weight": 1},
+    ]
+    print(solve(weapon_name, talent_list))
