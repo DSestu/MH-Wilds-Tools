@@ -1,7 +1,12 @@
 import gradio as gr
 import polars as pl
 
-from solver import get_talents_from_solution, solve
+from solver import (
+    get_jewel_markdown,
+    get_markdown_from_solution,
+    get_talents_from_solution,
+    solve,
+)
 
 quests_parquet_path = "data/quests.parquet"
 quests_dataframe = (
@@ -42,9 +47,162 @@ def quest_rewards() -> None:
 
 
 def build_solver() -> None:
-    talents = gr.State([])
+    gr.Markdown(open("./optimized_header.md", mode="r", encoding="utf-8").read())
+    talents_state = gr.State([])
     solution = gr.State({})
     target_levels = gr.State({})
+
+    with gr.Accordion(
+        "Tous les talents: Cliquer sur une ligne rajoute le talent aux souhaits",
+        open=True,
+    ):
+        talent_type_radio = gr.Radio(
+            label="Type",
+            choices=["Tout", "Equip", "Group", "Series", "Weapon"],
+            value="Tout",
+        )
+        fulltext_search = gr.Text(label="Recherche")
+        talent_dataframe_display = gr.DataFrame(
+            talents
+            #
+            .explode("levels")
+            .select(
+                pl.col("name").alias("Talent"),
+                pl.col("levels").struct.field("lvl").alias("Niveau"),
+                pl.col("levels").struct.field("description").alias("Détail"),
+                pl.col("description").alias("Description"),
+            )
+            .sort("Talent", "Niveau"),
+            interactive=False,
+        )
+
+        talent_type_radio.change(
+            lambda talent_type, text: talents.filter(pl.col("group") == talent_type)
+            .explode("levels")
+            .select(
+                pl.col("name").alias("Talent"),
+                pl.col("levels").struct.field("lvl").alias("Niveau"),
+                pl.col("levels").struct.field("description").alias("Détail"),
+                pl.col("description").alias("Description"),
+            )
+            .filter(
+                (
+                    pl.col("Talent")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+                | (
+                    pl.col("Détail")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+                | (
+                    pl.col("Description")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+            )
+            .sort("Talent", "Niveau")
+            if talent_type != "Tout"
+            else talents.explode("levels")
+            .select(
+                pl.col("group").alias("Type"),
+                pl.col("name").alias("Talent"),
+                pl.col("levels").struct.field("lvl").alias("Niveau"),
+                pl.col("levels").struct.field("description").alias("Détail"),
+                pl.col("description").alias("Description"),
+            )
+            .filter(
+                (
+                    pl.col("Talent")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+                | (
+                    pl.col("Détail")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+                | (
+                    pl.col("Description")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+            )
+            .sort("Type", "Talent", "Niveau"),
+            inputs=[talent_type_radio, fulltext_search],
+            outputs=talent_dataframe_display,
+        )
+        fulltext_search.change(
+            lambda talent_type, text: talents.filter(pl.col("group") == talent_type)
+            .explode("levels")
+            .select(
+                pl.col("name").alias("Talent"),
+                pl.col("levels").struct.field("lvl").alias("Niveau"),
+                pl.col("levels").struct.field("description").alias("Détail"),
+                pl.col("description").alias("Description"),
+            )
+            .filter(
+                (
+                    pl.col("Talent")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+                | (
+                    pl.col("Détail")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+                | (
+                    pl.col("Description")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+            )
+            .sort("Talent", "Niveau")
+            if talent_type != "Tout"
+            else talents.explode("levels")
+            .select(
+                pl.col("group").alias("Type"),
+                pl.col("name").alias("Talent"),
+                pl.col("levels").struct.field("lvl").alias("Niveau"),
+                pl.col("levels").struct.field("description").alias("Détail"),
+                pl.col("description").alias("Description"),
+            )
+            .filter(
+                (
+                    pl.col("Talent")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+                | (
+                    pl.col("Détail")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+                | (
+                    pl.col("Description")
+                    .str.to_lowercase()
+                    .str.replace(" ", "")
+                    .str.contains(text)
+                )
+            )
+            .sort("Type", "Talent", "Niveau"),
+            inputs=[talent_type_radio, fulltext_search],
+            outputs=talent_dataframe_display,
+        )
+
     gr.Markdown("# Talents")
     talents_dropdown = gr.Dropdown(
         choices=unique_talents,
@@ -60,11 +218,21 @@ def build_solver() -> None:
             ], None
         return tasks, None
 
+    # Add a callback to add a talent when clicking on the dataframe
+    def add_task_from_dataframe(tasks, df, event: gr.SelectData):
+        row = df.iloc[event.index[0]]
+        return tasks + [{"name": row["Talent"], "weight": 1, "target_level": -1}]
+
+    talent_dataframe_display.select(
+        add_task_from_dataframe,
+        inputs=[talents_state, talent_dataframe_display],
+        outputs=talents_state,
+    )
     talents_dropdown.change(
-        add_task, [talents, talents_dropdown], [talents, talents_dropdown]
+        add_task, [talents_state, talents_dropdown], [talents_state, talents_dropdown]
     )
 
-    @gr.render(inputs=talents)
+    @gr.render(inputs=talents_state)
     def render_talent_list(task_list):
         gr.Markdown(f"### Talents ({len(task_list)})")
         for task in task_list:
@@ -90,8 +258,8 @@ def build_solver() -> None:
                         if t is task
                     ][0]
                     and tasks,
-                    inputs=[target_level_input, talents],
-                    outputs=talents,
+                    inputs=[target_level_input, talents_state],
+                    outputs=talents_state,
                 )
 
                 weight_input.change(
@@ -99,8 +267,8 @@ def build_solver() -> None:
                         t.update({"weight": new_value}) or t for t in tasks if t is task
                     ][0]
                     and tasks,
-                    inputs=[weight_input, talents],
-                    outputs=talents,
+                    inputs=[weight_input, talents_state],
+                    outputs=talents_state,
                 )
 
                 delete_btn = gr.Button("Retirer", scale=0, variant="stop")
@@ -109,7 +277,7 @@ def build_solver() -> None:
                     task_list.remove(task)
                     return task_list
 
-                delete_btn.click(delete, None, [talents])
+                delete_btn.click(delete, None, [talents_state])
 
     gr.Markdown("# Armes")
     default_weapon_type = weapons["class"].unique().sort().to_list()[0]
@@ -151,15 +319,6 @@ def build_solver() -> None:
             inputs=dropdown_weapon_type,
             outputs=[dropdown_selected_weapon],
         )
-    with gr.Row():
-        with gr.Column():
-            weapon_name = gr.Markdown()
-            weapon_image = gr.Image(
-                None,
-                show_label=False,
-                container=False,
-            )
-        weapon_atk = gr.Markdown()
 
     dropdown_selected_weapon.change(
         lambda selected_weapon: weapons.filter(
@@ -169,35 +328,9 @@ def build_solver() -> None:
         outputs=selected_weapon,
     )
 
-    solve_button = gr.Button("Solve")
-    solve_button.click(solve, [selected_weapon, talents], solution)
+    solve_button = gr.Button("Optimiser", variant="primary")
+    solve_button.click(solve, [selected_weapon, talents_state], solution)
 
-    selected_weapon.change(
-        lambda selected_weapon: gr.Image(
-            selected_weapon["img"],
-            show_label=False,
-            container=False,
-        ),
-        inputs=selected_weapon,
-        outputs=weapon_image,
-    )
-    selected_weapon.change(
-        lambda selected_weapon: gr.Markdown(f"# {selected_weapon['name']}"),
-        inputs=selected_weapon,
-        outputs=weapon_name,
-    )
-
-    selected_weapon.change(
-        lambda selected_weapon: gr.Markdown(f"## Attaque: {selected_weapon['raw']}"),
-        inputs=selected_weapon,
-        outputs=weapon_atk,
-    )
-    talents_display = gr.Markdown()
-    talents.change(
-        lambda tasks: gr.Markdown(f"### Tasks: {tasks}"),
-        inputs=talents,
-        outputs=talents_display,
-    )
     with gr.Row():
         titles = []
         for armor_piece in ["Tête", "Torse", "Bras", "Taille", "Jambes"]:
@@ -259,17 +392,20 @@ def build_solver() -> None:
                 )
             piece = armor.filter(pl.col("name") == armor_piece)
 
-    solution_display = gr.Json()
+    gr.Markdown("---")
+    with gr.Row():
+        solution_jewel_markdown_armor = gr.Markdown()
+        solution_jewel_markdown_weapon = gr.Markdown()
+    solution_markdown = gr.Markdown()
+
     solution.change(
-        lambda solution: gr.Json(solution),
+        get_jewel_markdown,
         inputs=solution,
-        outputs=solution_display,
+        outputs=[solution_jewel_markdown_armor, solution_jewel_markdown_weapon],
     )
-    solution_talents = gr.DataFrame()
+
     solution.change(
-        lambda solution: get_talents_from_solution(solution),
-        inputs=solution,
-        outputs=solution_talents,
+        get_markdown_from_solution, inputs=solution, outputs=solution_markdown
     )
 
 

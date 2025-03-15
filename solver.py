@@ -728,6 +728,222 @@ def get_talents_from_solution(solution: dict) -> pl.DataFrame:
     )
 
 
+def get_markdown_from_solution(solution: dict) -> str:
+    solution_jewels = solution["jewels"]
+    weapon_name = solution["weapon"]
+    charm = solution["charm"]
+
+    return (
+        (
+            df := pl.DataFrame(
+                [
+                    {"name": solution[_type], "type": _type, "order": order}
+                    for order, _type in enumerate(
+                        ["Tête", "Torse", "Bras", "Taille", "Jambes"]
+                    )
+                ],
+            )
+            #
+            .join(
+                armor,
+                on="name",
+                how="inner",
+            )
+            .sort("order")
+            .pivot(
+                index="talent_name",
+                on="name",
+                values="talent_level",
+                aggregate_function="sum",
+            )
+            .join(
+                pl.DataFrame(
+                    [
+                        {"name": key, "quantity": value}
+                        for key, value in solution_jewels.items()
+                    ]
+                    if len(solution_jewels.keys()) > 0
+                    else {"name": "", "quantity": 0}
+                )
+                .join(jewels, on="name", how="inner")
+                .explode("jewel_talent_list")
+                .with_columns(
+                    pl.col("jewel_talent_list")
+                    .struct.field("name")
+                    .alias("talent_name"),
+                    pl.col("jewel_talent_list").struct.field("lvl").alias("talent_lvl"),
+                )
+                .with_columns(
+                    (pl.col("talent_lvl") * pl.col("quantity")).alias("Joyaux"),
+                )
+                .select("talent_name", "Joyaux"),
+                on="talent_name",
+                how="outer",
+            )
+            .with_columns(pl.coalesce("talent_name", "talent_name_right"))
+            .drop("talent_name_right")
+            .join(
+                weapons
+                #
+                .filter(pl.col("name") == weapon_name)
+                .explode("talents")
+                .select(
+                    pl.col("talents").struct.field("name").alias("talent_name"),
+                    pl.col("talents").struct.field("lvl").alias(weapon_name),
+                ),
+                on="talent_name",
+                how="outer",
+            )
+            .with_columns(pl.coalesce("talent_name", "talent_name_right"))
+            .drop("talent_name_right")
+            .join(
+                charms.filter(pl.col("name") == charm)
+                .select("talent_name", "talent_lvl")
+                .rename({"talent_lvl": charm}),
+                on="talent_name",
+                how="outer",
+            )
+            .with_columns(pl.coalesce("talent_name", "talent_name_right"))
+            .drop("talent_name_right")
+        )
+        .with_columns(pl.lit(0).alias("Total"))
+        .fill_null(0)
+        .with_columns(
+            pl.struct(df.columns[1:])
+            .alias("Total")
+            .map_elements(lambda s: sum(s.values()))
+            .alias("Total")
+        )
+        .sort("Total")
+        .join_asof(
+            talents.explode("levels")
+            .select(
+                pl.col("name").alias("talent_name"),
+                pl.col("levels").struct.field("lvl").alias("Total"),
+                pl.col("levels").struct.field("description").alias("Description"),
+            )
+            .sort("Total"),
+            by="talent_name",
+            on="Total",
+        )
+        .with_columns(pl.col(col).cast(pl.String).alias(col) for col in df.columns)
+        .with_columns(pl.col(col).str.replace("0", "") for col in df.columns)
+        .with_columns(pl.col("Joyaux").str.replace("0", ""))
+        .sort("Total", "talent_name", descending=[True, False])
+        .rename({"talent_name": "Talent"})
+        .to_pandas()
+        .to_markdown(index=False)
+    )
+
+
+def get_jewel_markdown(solution: dict) -> list[str]:
+    solution_jewels = solution["jewels"]
+    jewel_types = (
+        jewels
+        #
+        .explode("jewel_talent_list")
+        .select(
+            "name",
+            pl.col("jewel_talent_list").struct.field("name").alias("jewel_talent_name"),
+        )
+        .join(
+            talents.select(pl.col("name").alias("jewel_talent_name"), "group").unique(),
+            on="jewel_talent_name",
+            how="left",
+        )
+    )
+
+    armor_slots = (
+        pl.DataFrame(
+            [
+                {"name": solution[_type], "type": _type, "order": order}
+                for order, _type in enumerate(
+                    ["Tête", "Torse", "Bras", "Taille", "Jambes"]
+                )
+            ],
+        )
+        #
+        .join(
+            armor,
+            on="name",
+            how="inner",
+        )
+        .unique("name")
+        .select(pl.col(f"jewel_{i}").sum() for i in range(1, 4))
+        .unpivot()
+        .sort("variable")
+        .to_dicts()
+    )
+
+    weapon_slots = (
+        weapons
+        #
+        .filter(pl.col("name") == weapon_name)
+        .select(
+            pl.col("jewels").struct.field(str(i)).alias(f"jewel_{str(i)}")
+            for i in range(1, 4)
+        )
+        .unpivot()
+        .sort("variable")
+        .to_dicts()
+    )
+
+    armor_md = "# **Joyaux armure** \n\n"
+    for row in armor_slots:
+        size = row["variable"].replace("jewel_", "")
+        at_least_one_jewel = False
+        free_slots = row["value"]
+        for name, quantity in solution_jewels.items():
+            if (
+                name
+                in jewel_types.filter(pl.col("group") == "Weapon")["name"].to_list()
+            ):
+                continue
+            if (
+                not at_least_one_jewel
+                and quantity > 0
+                and name.split("[")[-1].replace("]", "") == size
+            ):
+                armor_md += f"### **Joyaux taille {size}**,  slots: {free_slots}\n\n"
+                at_least_one_jewel = True
+            if name.split("[")[-1].replace("]", "") == size:
+                armor_md += f"* {name} x{quantity}\n\n"
+                free_slots -= quantity
+        if free_slots > 0:
+            if not at_least_one_jewel:
+                armor_md += f"### **Joyaux taille {size}**,  slots: {free_slots}\n\n"
+            armor_md += f"* *Libre: {free_slots}*\n\n"
+
+    weapon_md = "# **Joyaux arme** \n\n"
+    for row in weapon_slots:
+        size = row["variable"].replace("jewel_", "")
+        at_least_one_jewel = False
+        free_slots = row["value"]
+        for name, quantity in solution_jewels.items():
+            if (
+                name
+                not in jewel_types.filter(pl.col("group") == "Weapon")["name"].to_list()
+            ):
+                continue
+            if (
+                not at_least_one_jewel
+                and quantity > 0
+                and name.split("[")[-1].replace("]", "") == size
+            ):
+                weapon_md += f"### **Joyaux taille {size}**,  slots: {free_slots}\n\n"
+                at_least_one_jewel = True
+            else:
+                continue
+            if name.split("[")[-1].replace("]", "") == size:
+                weapon_md += f"* {name} x{quantity}\n\n"
+                free_slots -= quantity
+        if free_slots > 0:
+            if not at_least_one_jewel:
+                weapon_md += f"### **Joyaux taille {size}**,  slots: {free_slots}\n\n"
+            weapon_md += f"* *Libre: {free_slots}*\n\n"
+    return armor_md, weapon_md
+
+
 if __name__ == "__main__":
     # weapon_name = {"name": "Lame d'espoir"}
     weapon_name = weapons.filter(pl.col("name") == "Lame d'espoir").to_dicts()[0]
