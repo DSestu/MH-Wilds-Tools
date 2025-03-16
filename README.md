@@ -10,4 +10,4 @@ pinned: false
 short_description: This is a set of tools for MH Wilds
 ---
 
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+Check out the configuration reference at <https://huggingface.co/docs/hub/spaces-config-reference>

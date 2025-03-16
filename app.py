@@ -2,9 +2,8 @@ import gradio as gr
 import polars as pl
 
 from solver import (
-    get_jewel_markdown,
-    get_markdown_from_solution,
-    get_talents_from_solution,
+    generate_markdown_for_jewels,
+    generate_markdown_from_solution,
     solve,
 )
 
@@ -399,13 +398,13 @@ def build_solver() -> None:
     solution_markdown = gr.Markdown()
 
     solution.change(
-        get_jewel_markdown,
+        generate_markdown_for_jewels,
         inputs=solution,
         outputs=[solution_jewel_markdown_armor, solution_jewel_markdown_weapon],
     )
 
     solution.change(
-        get_markdown_from_solution, inputs=solution, outputs=solution_markdown
+        generate_markdown_from_solution, inputs=solution, outputs=solution_markdown
     )
 
 
