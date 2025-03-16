@@ -1,13 +1,12 @@
 from collections import defaultdict
+from dataclasses import dataclass, field
 from itertools import pairwise
+from typing import Any, Dict, List
 
 import polars as pl
 from icecream import ic
 from ortools.sat.python import cp_model
 from rich import traceback
-
-from dataclasses import dataclass, field
-from typing import Dict, List, Any
 
 traceback.install()
 
@@ -20,35 +19,50 @@ weapons = pl.read_parquet("data/weapons.parquet")
 
 @dataclass
 class OptimizationVariables:
+    # Stores boolean variables indicating whether each armor piece is used
     use_armor_piece_booleans: Dict[str, Dict[str, Any]] = field(
         default_factory=lambda: defaultdict(dict)
     )
+    # Stores boolean variables indicating whether each charm is used
     use_charm_booleans: Dict[str, Any] = field(default_factory=dict)
+    # Lists of talent levels for each talent
     talent_lists: Dict[str, List[Any]] = field(
         default_factory=lambda: defaultdict(list)
     )
+    # Sum of talent levels for each talent
     talent_sums: Dict[str, Any] = field(default_factory=dict)
+    # Sum of talent levels capped at a maximum value for each talent
     talent_sums_capped: Dict[str, Any] = field(default_factory=dict)
+    # Series of talent levels within specified intervals
     talent_series_interval: Dict[str, List[Any]] = field(
         default_factory=lambda: defaultdict(list)
     )
+    # Final sum of talent levels after all calculations
     talent_sums_final: Dict[str, Any] = field(default_factory=dict)
+    # Boolean indicating if a group has enough talent level
     group_has_enough_level: Dict[str, Any] = field(default_factory=dict)
+    # Lists of jewel emplacement options for each armor piece
     jewel_emplacement_lists: Dict[str, Dict[str, List[Any]]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(list))
     )
+    # Sum of jewel emplacement values for each armor piece
     jewel_emplacement_sums: Dict[str, Dict[str, Any]] = field(
         default_factory=lambda: defaultdict(dict)
     )
+    # Total sum of jewel emplacement values for all armor pieces
     jewel_emplacement_sums_total_armor: Dict[str, Any] = field(default_factory=dict)
+    # Total sum of jewel emplacement values for all weapons
     jewel_emplacement_sums_total_weapon: Dict[str, Any] = field(default_factory=dict)
+    # Integer variables representing jewel usage for each level
     jewel_uses_integers: Dict[int, Dict[str, Any]] = field(
         default_factory=lambda: defaultdict(dict)
     )
 
 
 def _process_armor_pieces(
-    model: cp_model.CpModel, _vars: OptimizationVariables, unique_pieces: list
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    gear_type: str,
 ) -> None:
     """
     Processes each unique armor piece to set up constraint programming variables and constraints.
@@ -67,59 +81,370 @@ def _process_armor_pieces(
     Args:
         model (cp_model.CpModel): The constraint programming model to which variables and constraints are added.
         _vars (dict): A dictionary to store variables and other data used in the constraint programming model.
-        unique_pieces (list): A list of unique armor pieces to process.
+        gear_type (str): The name of the type of armor piece being processed.
 
     Returns:
         None
     """
-    for armor_piece in unique_pieces:
-        # _vars.setdefault("use_armor_piece_booleans", {}).setdefault(armor_piece, {})
-        # _vars.setdefault("jewel_emplacement_lists", {}).setdefault(armor_piece, {})
-        # _vars.setdefault("jewel_emplacement_sums", {}).setdefault(armor_piece, {})
-
-        armor_piece_filtered = armor.filter(pl.col("piece") == armor_piece)
-        unique_armor_pieces_names = (
-            armor_piece_filtered["name"].unique().sort().to_list()
+    # Filter the armor data to get only the rows corresponding to the current armor piece
+    armor_piece_filtered = armor.filter(pl.col("piece") == gear_type)
+    # Retrieve unique armor piece names and sort them into a list
+    unique_armor_pieces_names = armor_piece_filtered["name"].unique().sort().to_list()
+    for unique_armor_piece_name in unique_armor_pieces_names:
+        # Filter to get data for the specific unique armor piece name
+        unique_armor_piece = armor_piece_filtered.filter(
+            pl.col("name") == unique_armor_piece_name
         )
-        for unique_armor_piece_name in unique_armor_pieces_names:
-            unique_armor_piece = armor_piece_filtered.filter(
-                pl.col("name") == unique_armor_piece_name
+
+        # Define a boolean variable that indicates if the armor piece is equipped
+        names = unique_armor_piece["name"].to_list()
+        # There are multiple rows for the same armor piece, because each row is a potential talent, so we take the first one to get the piece name, but they are all the same
+        name = names[0]
+        armor_piece_equipped = model.NewBoolVar(f"use_piece_{gear_type}_{name}")
+
+        for row in unique_armor_piece.iter_rows():
+            (name, talent_name, talent_level) = row[1:4]
+            # Create an integer variable representing the talent level activated by equipping the armor piece
+            var_talent_lvl = model.NewIntVar(
+                lb=0,
+                ub=30,
+                name=f"talent_{talent_name}_from_type_{gear_type}_with_{name}",
+            )
+            # Add constraints to enforce the talent level based on whether the armor piece is equipped
+            model.Add(var_talent_lvl == talent_level).only_enforce_if(
+                armor_piece_equipped
+            )
+            # If the armor piece is not equipped, the talent level should be 0
+            model.Add(var_talent_lvl == 0).only_enforce_if(armor_piece_equipped.Not())
+
+            # Register the talent level variable in the _vars dictionary
+            _vars.talent_lists[talent_name].append(var_talent_lvl)
+
+        # Store the boolean variable indicating if the armor piece is equipped in the _vars dictionary
+        _vars.use_armor_piece_booleans[gear_type][name] = armor_piece_equipped
+    # Add the constraint of only one type of armor piece equipped at a time
+    model.Add(sum(_vars.use_armor_piece_booleans[gear_type].values()) <= 1)
+
+
+def _create_jewel_slots_for_armor_pieces(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    gear_type: str,
+) -> None:
+    """
+    Creates jewel slots for a given armor piece within the optimization model.
+
+    This function processes each unique armor piece name to handle jewel emplacements.
+    It defines boolean variables indicating if the armor piece is equipped and creates
+    integer variables for each jewel level. Constraints are added to enforce the jewel
+    levels based on whether the armor piece is equipped.
+
+    Args:
+        model (cp_model.CpModel): The optimization model to which constraints are added.
+        _vars (OptimizationVariables): A data structure holding variables used in the model.
+        gear_type (str): The name of the type of armor piece being processed.
+
+    Returns:
+        None
+    """
+    # Filter the armor data to get only the rows corresponding to the current armor piece
+    armor_piece_filtered = armor.filter(pl.col("piece") == gear_type)
+    # Retrieve unique armor piece names and sort them into a list
+    unique_armor_pieces_names = armor_piece_filtered["name"].unique().sort().to_list()
+
+    # Iterate over each unique armor piece name to process jewel emplacements
+    for unique_armor_piece_name in unique_armor_pieces_names:
+        # Filter to get data for the specific unique armor piece name
+        unique_armor_piece = armor_piece_filtered.filter(
+            pl.col("name") == unique_armor_piece_name
+        )
+        names = unique_armor_piece["name"].to_list()
+        # There are multiple rows for the same armor piece, because each row is a potential talent, so we take the first one to get the piece name, but they are all the same
+        name = names[0]
+
+        # Retrieve the boolean variable indicating if the armor piece is equipped
+        armor_piece_equipped = _vars.use_armor_piece_booleans[gear_type][name]
+
+        # Process each row in the unique armor piece data to handle jewel levels
+        for row in unique_armor_piece.iter_rows():
+            (_, name, talent_name, talent_level, *jewels) = row
+            # Unpack jewel levels from the row data
+            jewel_0, jewel_1, jewel_2, jewel_3, jewel_4 = jewels
+
+            # Initialize jewel levels and corresponding variables
+            jewel_levels = [jewel_1, jewel_2, jewel_3, jewel_4]
+            var_nb_jewels = []
+
+            # Create integer variables for each jewel level and add constraints
+            for i, jewel in enumerate(jewel_levels, start=1):
+                var_nb_jewel = model.NewIntVar(
+                    lb=0,
+                    ub=4,
+                    name=f"jewel_lvl_{i}_from_type_{gear_type}_with_{name}",
+                )
+                # Enforce constraints based on whether the armor piece is equipped
+                model.Add(var_nb_jewel == jewel).only_enforce_if(armor_piece_equipped)
+                model.Add(var_nb_jewel == 0).only_enforce_if(armor_piece_equipped.Not())
+                var_nb_jewels.append(var_nb_jewel)
+
+            # Register the jewel level variables in the _vars dictionary
+            for lvl, var_nb_jewel in zip(
+                ["lvl1", "lvl2", "lvl3", "lvl4"],
+                var_nb_jewels,
+            ):
+                _vars.jewel_emplacement_lists[gear_type][lvl].append(var_nb_jewel)
+
+    # Create variables that are the sum of the jewel emplacements for each level
+    for i in range(1, 5):
+        lvl = f"lvl{i}"
+        var_jewel_emplacement_sums = model.NewIntVar(
+            lb=0,
+            ub=30,
+            name=f"jewel_emplacement_sums_{lvl}_from_type_{gear_type}",
+        )
+        # Add constraints to calculate the sum of jewel emplacements
+        model.Add(
+            var_jewel_emplacement_sums
+            == sum(_vars.jewel_emplacement_lists[gear_type][lvl])
+        )
+        # Store the sum variables in the _vars dictionary
+        _vars.jewel_emplacement_sums[gear_type][lvl] = var_jewel_emplacement_sums
+
+
+def _calculate_total_armor_jewel_emplacements(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    gear_types: list[str],
+) -> None:
+    """
+    Calculate the total jewel emplacements for all armor pieces.
+
+    This function iterates over each jewel level from 1 to 4 and creates a new integer variable
+    representing the sum of jewel emplacements for all armor pieces at each level. It then adds
+    constraints to calculate these sums across all armor pieces and stores the results in the
+    _vars dictionary for later use.
+
+    Args:
+        model: The constraint programming model used for optimization.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+        gear_types: A list of unique armor piece identifiers used in the optimization.
+    """
+
+    for i in range(1, 5):
+        # Define the jewel level string for clarity
+        lvl = f"lvl{i}"
+
+        # Create a new integer variable to represent the sum of jewel emplacements for all armor pieces at this level
+        var_jewel_emplacement_sums = model.NewIntVar(
+            lb=0,
+            ub=30,
+            name=f"jewel_{lvl}_emplacement_sums_for_all_armor_pieces",
+        )
+
+        # Add a constraint to calculate the sum of jewel emplacements across all armor pieces for the current jewel level
+        model.Add(
+            var_jewel_emplacement_sums
+            == sum(
+                _vars.jewel_emplacement_sums[armor_piece][lvl]
+                for armor_piece in gear_types
+            )
+        )
+
+        # Store the calculated sum variable in the _vars dictionary for later use
+        _vars.jewel_emplacement_sums_total_armor[lvl] = var_jewel_emplacement_sums
+
+
+def _process_charms(model: cp_model.CpModel, _vars: OptimizationVariables) -> None:
+    """
+    Process charm data and add constraints to the model.
+
+    This function iterates over each unique charm name, retrieves the corresponding charm data,
+    and creates boolean and integer variables to represent the usage and talent levels of each charm.
+    It adds constraints to enforce the talent levels based on whether the charm is used or not and
+    ensures that only one charm can be equipped at a time.
+
+    Args:
+        model: The constraint programming model used for optimization.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+    """
+
+    # Charm talents part
+    # Get a sorted list of unique charm names
+    unique_charm_name = charms["name"].unique().sort().to_list()
+
+    # Iterate over each unique charm name
+    for charm_name in unique_charm_name:
+        # Filter charm data for the current charm name
+        charm_data = charms.filter(pl.col("name") == charm_name).to_dicts()
+
+        # Create a boolean variable to represent the usage of the charm
+        use_charm_var = model.NewBoolVar(f"use_charm_{charm_name}")
+
+        # Iterate over each row of charm data
+        for row in charm_data:
+            charm_name = row["name"]
+            charm_talent = row["talent_name"]
+            charm_lvl = row["talent_lvl"]
+
+            # Create an integer variable for the talent level of the charm
+            charm_talent_lvl = model.NewIntVar(
+                lb=0,
+                ub=30,
+                name=f"charm_talent_{charm_talent}_lvl_{charm_lvl}_from_{charm_name}",
             )
 
-            # Define a boolean that tells if the armor piece is equipped
-            names = unique_armor_piece["name"].to_list()
-            name = names[0]
-            armor_piece_equipped = model.NewBoolVar(f"use_piece_{armor_piece}_{name}")
+            # Add constraints to enforce talent levels based on charm usage
+            model.Add(charm_talent_lvl == charm_lvl).only_enforce_if(use_charm_var)
+            model.Add(charm_talent_lvl == 0).only_enforce_if(use_charm_var.Not())
 
-            for row in unique_armor_piece.iter_rows():
-                (name, talent_name, talent_level) = row[1:4]
-                # Create a variable that tells that the talent is active due to the fact that the armor piece is equipped
-                var_talent_lvl = model.NewIntVar(
-                    lb=0,
-                    ub=30,
-                    name=f"talent_{talent_name}_from_type_{armor_piece}_with_{name}",
-                )
-                model.Add(var_talent_lvl == talent_level).only_enforce_if(
-                    armor_piece_equipped
-                )
-                model.Add(var_talent_lvl == 0).only_enforce_if(
-                    armor_piece_equipped.Not()
-                )
+            # Append the talent level variable to the talent list
+            _vars.talent_lists[charm_talent].append(charm_talent_lvl)
 
-                # # Create the key if it doesn't exist
-                # if _vars.talent_lists.get(talent_name) is None:
-                #     _vars.talent_lists[talent_name] = []
+        # Store the boolean variable for charm usage
+        _vars.use_charm_booleans[charm_name] = use_charm_var
 
-                # Register variables
-                _vars.talent_lists[talent_name].append(var_talent_lvl)
+    # Add the constraint to ensure only one charm can be equipped at a time
+    model.Add(sum(_vars.use_charm_booleans.values()) <= 1)
 
-            # Store the boolean that tells if the armor piece is equipped
-            _vars.use_armor_piece_booleans[armor_piece][name] = armor_piece_equipped
+
+def _set_weapon_talents(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    weapon: pl.DataFrame,
+) -> None:
+    """
+    Set weapon talents in the constraint programming model.
+
+    This function processes each weapon's talent data, creating integer variables
+    for each talent level and adding constraints to the model to ensure the talent
+    levels are correctly represented. The function also updates the talent list
+    dictionary with these variables.
+
+    Args:
+        model: The constraint programming model used for optimization.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+        weapon: A DataFrame containing weapon data, including talent names and levels.
+    """
+    for row in weapon.to_dicts():
+        # Extract talent name and level from the current row
+        talent_name = row["talent_name"]
+        talent_lvl = row["talent_lvl"]
+
+        # Create an integer variable for the talent level of the weapon
+        var_talent_lvl = model.NewIntVar(
+            lb=1,
+            ub=30,
+            name=f"weapon_talent_{talent_name}_lvl_{talent_lvl}",
+        )
+
+        # Skip processing if the talent level is not defined
+        if not talent_lvl:
+            continue
+
+        # Add a constraint to set the talent level variable to the actual talent level
+        model.Add(var_talent_lvl == talent_lvl)
+
+        # Register the variable in the talent list dictionary
+        if _vars.talent_lists.get(talent_name) is None:
+            _vars.talent_lists[talent_name] = []
+        _vars.talent_lists[talent_name].append(var_talent_lvl)
+
+
+def _create_weapon_jewel_slots(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    weapon: pl.DataFrame,
+) -> None:
+    """
+    Create jewel slots for weapons in the constraint programming model.
+
+    This function iterates over the jewel levels for a given weapon, creating integer
+    variables for each jewel level and adding constraints to the model to ensure the
+    jewel levels are correctly represented. The function also updates the jewel
+    emplacement sums total for the weapon with these variables.
+
+    Args:
+        model: The constraint programming model used for optimization.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+        weapon: A DataFrame containing weapon data, including jewel levels.
+    """
+    row = weapon.to_dicts()[0]
+    # Iterate over jewel levels from 1 to 3
+    for i in range(1, 4):
+        lvl = f"lvl{i}"
+
+        # Create an integer variable for the jewel emplacement sums for the current level
+        var_jewel_emplacement_sums = model.NewIntVar(
+            lb=0,
+            ub=30,
+            name=f"jewel_emplacement_sums_{lvl}_from_weapon",
+        )
+
+        # Add a constraint to set the jewel emplacement sums variable to the actual jewel level from the weapon
+        model.Add(var_jewel_emplacement_sums == row[f"jewel_{lvl}"])
+
+        # Register the variable in the jewel emplacement sums total for the weapon
+        _vars.jewel_emplacement_sums_total_weapon[lvl] = var_jewel_emplacement_sums
+
+
+def _register_jewel_usage(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    all_jewels: pl.DataFrame,
+    jewel_name: str,
+) -> None:
+    """
+    Register the usage of a specific jewel in the constraint programming model.
+
+    This function filters the jewel data to find entries matching the given jewel name,
+    creates integer variables to represent the number of times the jewel is used, and
+    adds constraints to ensure the total talent level is correctly calculated based on
+    the jewel usage. It also updates the talent lists and jewel uses integers with the
+    newly created variables.
+
+    Args:
+        model: The constraint programming model used for optimization.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+        all_jewels: A DataFrame containing all jewel data, including names and talent levels.
+        jewel_name: The name of the jewel to register in the model.
+    """
+    # Filter the jewels data to get only the rows corresponding to the current jewel name
+    jewel_data = all_jewels.filter(pl.col("jewel_name") == jewel_name)
+
+    # Create an integer variable to represent the number of times the jewel is used
+    nb_of_jewel_use = model.NewIntVar(lb=0, ub=100, name=f"nb_of_use_of_{jewel_name}")
+
+    # Iterate over each row in the filtered jewel data
+    for row in jewel_data.to_dicts():
+        talent_name = row["talent_name"]
+        talent_lvl = row["talent_lvl"]
+
+        # Create an integer variable to represent the total talent level contributed by the jewel
+        total_talent = model.NewIntVar(
+            lb=0,
+            ub=100,
+            name=f"total_talent_{talent_name}_lvl_of_for_jewel_{jewel_name}",
+        )
+
+        # Add a constraint to ensure the total talent level is equal to the number of jewel uses times the talent level
+        model.Add(total_talent == nb_of_jewel_use * talent_lvl)
+
+        # Register the total talent variable in the talent lists dictionary
+        if talent_name not in _vars.talent_lists:
+            _vars.talent_lists[talent_name] = []
+        _vars.talent_lists[talent_name].append(total_talent)
+
+    # Get the jewel level from the current row
+    jewel_lvl = row["jewel_lvl"]
+
+    # Register the number of jewel uses in the jewel uses integers dictionary
+    _vars.jewel_uses_integers[jewel_lvl][jewel_name] = nb_of_jewel_use
 
 
 def solve(
     weapon_dict: dict,
     talent_list: list[dict],
+    gear_types: list[str],
 ) -> dict:
     """
     Solve the armor optimization problem using constraint programming.
@@ -142,204 +467,12 @@ def solve(
     # Initialize constraint programming model
     model = cp_model.CpModel()
 
-    # Organize variables in a structured dictionary
-    _vars = {
-        "group_has_enough_level": {},  # Tracks if a group of talents meets the required level
-        "jewel_emplacement_lists": {},  # Stores lists of jewel placements for each armor piece
-        "jewel_emplacement_sums_total_armor": {},  # Sums of jewel levels for all armor pieces
-        "jewel_emplacement_sums_total_weapon": {},  # Sums of jewel levels for the weapon
-        "jewel_emplacement_sums": {},  # Sums of jewel levels for each armor piece
-        "jewel_uses_integers": {},  # Tracks the integer usage of jewels
-        "talent_lists": {},  # Stores lists of talents for each armor piece
-        "talent_series_interval": {},  # Defines intervals for talent series
-        "talent_sums_capped": {},  # Capped sums of talent levels
-        "talent_sums_final": {},  # Final sums of talent levels after adjustments
-        "talent_sums": {},  # Sums of talent levels for each armor piece
-        "use_armor_piece_booleans": {},  # Boolean flags indicating if an armor piece is used
-        "use_charm_booleans": {},  # Boolean flags indicating if a charm is used
-    }
+    # Initialize the optimization variables
     _vars = OptimizationVariables()
 
-    unique_pieces = armor["piece"].unique().sort().to_list()
-
-    _process_armor_pieces(model=model, _vars=_vars, unique_pieces=unique_pieces)
-    for armor_piece in unique_pieces:
-        armor_piece_filtered = armor.filter(pl.col("piece") == armor_piece)
-        unique_armor_pieces_names = (
-            armor_piece_filtered["name"].unique().sort().to_list()
-        )
-        # Jewel emplacement part
-        for unique_armor_piece_name in unique_armor_pieces_names:
-            unique_armor_piece = armor_piece_filtered.filter(
-                pl.col("name") == unique_armor_piece_name
-            )
-
-            # Define a boolean that tells if the armor piece is equipped
-            names = unique_armor_piece["name"].to_list()
-            name = names[0]
-            armor_piece_equipped = model.NewBoolVar(f"use_piece_{armor_piece}_{name}")
-
-            for row in unique_armor_piece.iter_rows():
-                (
-                    _,
-                    name,
-                    talent_name,
-                    talent_level,
-                    jewel_0,
-                    jewel_1,
-                    jewel_2,
-                    jewel_3,
-                    jewel_4,
-                ) = row
-
-                # Jewel emplacement part
-                # LVL 1
-                var_nb_jewel_1 = model.NewIntVar(
-                    lb=0,
-                    ub=4,
-                    name=f"jewel_lvl_1_from_type_{armor_piece}_with_{name}",
-                )
-                model.Add(var_nb_jewel_1 == jewel_1).only_enforce_if(
-                    armor_piece_equipped
-                )
-                model.Add(var_nb_jewel_1 == 0).only_enforce_if(
-                    armor_piece_equipped.Not()
-                )
-
-                # LVL 2
-                var_nb_jewel_2 = model.NewIntVar(
-                    lb=0,
-                    ub=4,
-                    name=f"jewel_lvl_2_from_type_{armor_piece}_with_{name}",
-                )
-                model.Add(var_nb_jewel_2 == jewel_2).only_enforce_if(
-                    armor_piece_equipped
-                )
-                model.Add(var_nb_jewel_2 == 0).only_enforce_if(
-                    armor_piece_equipped.Not()
-                )
-
-                # LVL 3
-                var_nb_jewel_3 = model.NewIntVar(
-                    lb=0,
-                    ub=4,
-                    name=f"jewel_lvl_3_from_type_{armor_piece}_with_{name}",
-                )
-                model.Add(var_nb_jewel_3 == jewel_3).only_enforce_if(
-                    armor_piece_equipped
-                )
-                model.Add(var_nb_jewel_3 == 0).only_enforce_if(
-                    armor_piece_equipped.Not()
-                )
-
-                # LVL 4
-                var_nb_jewel_4 = model.NewIntVar(
-                    lb=0,
-                    ub=4,
-                    name=f"jewel_lvl_4_from_type_{armor_piece}_with_{name}",
-                )
-                model.Add(var_nb_jewel_4 == jewel_4).only_enforce_if(
-                    armor_piece_equipped
-                )
-                model.Add(var_nb_jewel_4 == 0).only_enforce_if(
-                    armor_piece_equipped.Not()
-                )
-
-            # if _vars.get("jewel_emplacement_lists").get(armor_piece) is None:
-            #     _vars.jewel_emplacement_lists[armor_piece] = {}
-
-            # if (
-            #     _vars.get("jewel_emplacement_lists").get(armor_piece).get("lvl1")
-            #     is None
-            # ):
-            #     _vars.jewel_emplacement_lists[armor_piece]["lvl1"] = []
-            _vars.jewel_emplacement_lists[armor_piece]["lvl1"].append(var_nb_jewel_1)
-
-            # if (
-            #     _vars.get("jewel_emplacement_lists").get(armor_piece).get("lvl2")
-            #     is None
-            # ):
-            #     _vars.jewel_emplacement_lists[armor_piece]["lvl2"] = []
-            _vars.jewel_emplacement_lists[armor_piece]["lvl2"].append(var_nb_jewel_2)
-
-            # if (
-            #     _vars.get("jewel_emplacement_lists").get(armor_piece).get("lvl3")
-            #     is None
-            # ):
-            #     _vars.jewel_emplacement_lists[armor_piece]["lvl3"] = []
-            _vars.jewel_emplacement_lists[armor_piece]["lvl3"].append(var_nb_jewel_3)
-
-            # if (
-            #     _vars.get("jewel_emplacement_lists").get(armor_piece).get("lvl4")
-            #     is None
-            # ):
-            #     _vars.jewel_emplacement_lists[armor_piece]["lvl4"] = []
-            _vars.jewel_emplacement_lists[armor_piece]["lvl4"].append(var_nb_jewel_4)
-
-        # Create variables that are the sum of the jewel emplacements
-        for i in range(1, 5):
-            lvl = f"lvl{i}"
-            var_jewel_emplacement_sums = model.NewIntVar(
-                lb=0,
-                ub=30,
-                name=f"jewel_emplacement_sums_{lvl}_from_type_{armor_piece}",
-            )
-            model.Add(
-                var_jewel_emplacement_sums
-                == sum(_vars.jewel_emplacement_lists[armor_piece][lvl])
-            )
-            _vars.jewel_emplacement_sums[armor_piece][lvl] = var_jewel_emplacement_sums
-
-        # Add the constraint of only one type of armor piece equipped at a time
-        model.Add(sum(_vars.use_armor_piece_booleans[armor_piece].values()) <= 1)
-
-    # Create a variable that symbolizes the total number of armor jewels
-    for i in range(1, 5):
-        lvl = f"lvl{i}"
-        var_jewel_emplacement_sums = model.NewIntVar(
-            lb=0,
-            ub=30,
-            name=f"jewel_{lvl}_emplacement_sums_for_all_armor_pieces",
-        )
-        model.Add(
-            var_jewel_emplacement_sums
-            == sum(
-                _vars.jewel_emplacement_sums[armor_piece][lvl]
-                for armor_piece in unique_pieces
-            )
-        )
-        _vars.jewel_emplacement_sums_total_armor[lvl] = var_jewel_emplacement_sums
-
-    # Charm talents part
-    unique_charm_name = charms["name"].unique().sort().to_list()
-    for charm_name in unique_charm_name:
-        charm_data = charms.filter(pl.col("name") == charm_name).to_dicts()
-
-        use_charm_var = model.NewBoolVar(f"use_charm_{charm_name}")
-        for row in charm_data:
-            charm_name = row["name"]
-            charm_talent = row["talent_name"]
-            charm_lvl = row["talent_lvl"]
-
-            charm_talent_lvl = model.NewIntVar(
-                lb=0,
-                ub=30,
-                name=f"charm_talent_{talent_name}_lvl_{charm_lvl}_from_{charm_name}",
-            )
-            model.Add(charm_talent_lvl == charm_lvl).only_enforce_if(use_charm_var)
-            model.Add(charm_talent_lvl == 0).only_enforce_if(use_charm_var.Not())
-
-            # Register the variable
-            # if _vars.talent_lists.get(charm_talent) is None:
-            #     _vars.talent_lists[charm_talent] = []
-
-            _vars.talent_lists[charm_talent].append(charm_talent_lvl)
-        _vars.use_charm_booleans[charm_name] = use_charm_var
-
-    # Add the constraint of only one charm equipped at a time
-    model.Add(sum(_vars.use_charm_booleans.values()) <= 1)
-
-    # Weapon talent part
+    # Get unique type of armor pieces
+    gear_types = armor["piece"].unique().sort().to_list()
+    # Get weapon data
     weapon = (
         weapons.filter(pl.col("name") == weapon_name)
         .explode("talents")
@@ -353,72 +486,54 @@ def solve(
             pl.col("talents").struct.field("lvl").alias("talent_lvl"),
         )
     )
-    for row in weapon.to_dicts():
-        talent_name = row["talent_name"]
-        talent_lvl = row["talent_lvl"]
-        var_talent_lvl = model.NewIntVar(
-            lb=1,
-            ub=30,
-            name=f"weapon_talent_{talent_name}_lvl_{talent_lvl}",
-        )
-        if not talent_lvl:
-            continue
-        model.Add(var_talent_lvl == talent_lvl)
-        # Register the variable
-        if _vars.talent_lists.get(talent_name) is None:
-            _vars.talent_lists[talent_name] = []
-        _vars.talent_lists[talent_name].append(var_talent_lvl)
-
-    # Create a variable that symbolizes the total number of weapon jewels
-    for i in range(1, 4):
-        lvl = f"lvl{i}"
-        var_jewel_emplacement_sums = model.NewIntVar(
-            lb=0,
-            ub=30,
-            name=f"jewel_emplacement_sums_{lvl}_from_weapon",
-        )
-        model.Add(var_jewel_emplacement_sums == row[f"jewel_{lvl}"])
-        # Register the variable
-        _vars.jewel_emplacement_sums_total_weapon[lvl] = var_jewel_emplacement_sums
-
-    # Jewels
-    ## Register the number of jewels used
+    # Get jewels data
     all_jewels = jewels.explode("jewel_talent_list").select(
         pl.col("name").alias("jewel_name"),
         "jewel_lvl",
         pl.col("jewel_talent_list").struct.field("name").alias("talent_name"),
         pl.col("jewel_talent_list").struct.field("lvl").alias("talent_lvl"),
     )
-    unique_jewels_names = all_jewels["jewel_name"].unique().sort().to_list()
-    for jewel_name in unique_jewels_names:
-        jewel_data = all_jewels.filter(pl.col("jewel_name") == jewel_name)
-        nb_of_jewel_use = model.NewIntVar(
-            lb=0, ub=100, name=f"nb_of_use_of_{jewel_name}"
-        )
-        for row in jewel_data.to_dicts():
-            talent_name = row["talent_name"]
-            talent_lvl = row["talent_lvl"]
-            total_talent = model.NewIntVar(
-                lb=0,
-                ub=100,
-                name=f"total_talent_{talent_name}_lvl_of_for_jewel_{jewel_name}",
-            )
-            model.Add(total_talent == nb_of_jewel_use * talent_lvl)
-
-            if talent_name not in _vars.talent_lists:
-                _vars.talent_lists[talent_name] = []
-            _vars.talent_lists[talent_name].append(total_talent)
-        jewel_lvl = row["jewel_lvl"]
-        # if jewel_lvl not in _vars.jewel_uses_integers:
-        #     _vars.jewel_uses_integers[jewel_lvl] = {}
-        _vars.jewel_uses_integers[jewel_lvl][jewel_name] = nb_of_jewel_use
-
-    # Add contraints for maximum number of jewels
-    ## Get jewel types
+    # Get jewel types
     jewel_types = all_jewels.join(
         talents.select("group", pl.col("name").alias("talent_name")).unique(),
         on="talent_name",
     )
+
+    # BEGIN CONSTRAINTS SETUP
+    for gear_type in gear_types:
+        # Add constraints related to the usage of armor piece and talent levels inherited from the armor pieces
+        # TODO: Separate the variable indicating that the armor piece is equipped in an other function
+        _process_armor_pieces(model=model, _vars=_vars, gear_type=gear_type)
+        # Add constraints related to the amount of jewel emplacement and the size of the jewel emplacement
+        _create_jewel_slots_for_armor_pieces(
+            model=model, _vars=_vars, gear_type=gear_type
+        )
+
+    # Calculate the total jewel emplacement for all armor pieces for each jewel level
+    _calculate_total_armor_jewel_emplacements(
+        model=model, _vars=_vars, gear_types=gear_types
+    )
+
+    # Add constraints related to the usage of charms and the talent levels inherited from the charms
+    # TODO: Separate the variable indicating that the charm is equipped in an other function
+    _process_charms(model=model, _vars=_vars)
+
+    # Add constraints related to the usage of weapon and the talent levels inherited from the weapon
+    _set_weapon_talents(model=model, _vars=_vars, weapon=weapon)
+
+    # Create variables that symbolizes the total number of weapon jewels
+    _create_weapon_jewel_slots(model=model, _vars=_vars, weapon=weapon)
+
+    # Jewels
+    ## Register the number of jewels used
+
+    unique_jewels_names = all_jewels["jewel_name"].unique().sort().to_list()
+    for jewel_name in unique_jewels_names:
+        _register_jewel_usage(
+            model=model, _vars=_vars, jewel_name=jewel_name, all_jewels=all_jewels
+        )
+
+    # Add contraints for maximum number of jewels
 
     ## Get armor jewel types
     armor_jewel_types = jewel_types.filter(pl.col("group") == "Equip")
@@ -667,7 +782,7 @@ def solve(
     lvl_emplacements = {}
     for lvl in range(1, 4):
         lvl_emplacements[lvl] = []
-        for armor_piece, _dict in _vars.jewel_emplacement_sums.items():
+        for gear_type, _dict in _vars.jewel_emplacement_sums.items():
             lvl_emplacements[lvl].append(_dict[f"lvl{lvl}"])
 
     maximize_nb_of_free_jewels = []
@@ -722,10 +837,10 @@ def solve(
 
     # ic(f"Solver status: {solver_statuses[status]}")
     solution = {"jewels": {}, "weapon": weapon.to_dicts()[0]["name"]}
-    for armor_piece, var_dict in _vars.use_armor_piece_booleans.items():
+    for gear_type, var_dict in _vars.use_armor_piece_booleans.items():
         for name, var in var_dict.items():
             if solver.value(var) == 1:
-                solution[armor_piece] = name
+                solution[gear_type] = name
     for charm, var in _vars.use_charm_booleans.items():
         if solver.value(expression=var) == 1:
             solution["charm"] = charm
