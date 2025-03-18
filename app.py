@@ -1,11 +1,11 @@
 import gradio as gr
 import polars as pl
 
-from solver import (
+from display import (
     generate_markdown_for_jewels,
     generate_markdown_from_solution,
-    solve,
 )
+from solver import solve
 
 quests_parquet_path = "data/quests.parquet"
 quests_dataframe = (

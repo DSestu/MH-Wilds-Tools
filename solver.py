@@ -166,17 +166,19 @@ def _create_jewel_slots_for_armor_pieces(
         armor_piece_equipped = _vars.use_armor_piece_booleans[gear_type][name]
 
         # Process each row in the unique armor piece data to handle jewel levels
-        for row in unique_armor_piece.iter_rows():
+        for row in unique_armor_piece.unique(subset="name").iter_rows():
             (_, name, talent_name, talent_level, *jewels) = row
             # Unpack jewel levels from the row data
             jewel_0, jewel_1, jewel_2, jewel_3, jewel_4 = jewels
 
             # Initialize jewel levels and corresponding variables
             jewel_levels = [jewel_1, jewel_2, jewel_3, jewel_4]
+            # jewel_levels = [0, 0, 0, 1, 0]
             var_nb_jewels = []
 
             # Create integer variables for each jewel level and add constraints
             for i, jewel in enumerate(jewel_levels, start=1):
+                # Create an integer variable for each jewel level
                 var_nb_jewel = model.NewIntVar(
                     lb=0,
                     ub=4,
@@ -245,11 +247,9 @@ def _calculate_total_armor_jewel_emplacements(
         model.Add(
             var_jewel_emplacement_sums
             == sum(
-                _vars.jewel_emplacement_sums[armor_piece][lvl]
-                for armor_piece in gear_types
+                _vars.jewel_emplacement_sums[gear_type][lvl] for gear_type in gear_types
             )
         )
-
         # Store the calculated sum variable in the _vars dictionary for later use
         _vars.jewel_emplacement_sums_total_armor[lvl] = var_jewel_emplacement_sums
 
@@ -267,8 +267,6 @@ def _process_charms(model: cp_model.CpModel, _vars: OptimizationVariables) -> No
         model: The constraint programming model used for optimization.
         _vars: An instance of OptimizationVariables containing variables for the optimization process.
     """
-
-    # Charm talents part
     # Get a sorted list of unique charm names
     unique_charm_name = charms["name"].unique().sort().to_list()
 
@@ -430,8 +428,6 @@ def _register_jewel_usage(
         model.Add(total_talent == nb_of_jewel_use * talent_lvl)
 
         # Register the total talent variable in the talent lists dictionary
-        if talent_name not in _vars.talent_lists:
-            _vars.talent_lists[talent_name] = []
         _vars.talent_lists[talent_name].append(total_talent)
 
     # Get the jewel level from the current row
@@ -441,181 +437,77 @@ def _register_jewel_usage(
     _vars.jewel_uses_integers[jewel_lvl][jewel_name] = nb_of_jewel_use
 
 
-def solve(
-    weapon_dict: dict,
-    talent_list: list[dict],
-    gear_types: list[str],
-) -> dict:
+def _add_jewel_usage_constraints(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    jewel_types: pl.DataFrame,
+    group_name: str,
+    emplacement_sums: dict,
+) -> None:
     """
-    Solve the armor optimization problem using constraint programming.
+    Adds constraints to the model to ensure that the jewel usage adheres to the
+    available emplacement slots for a given group of jewels.
+
+    This function filters the jewel types for a specific group and calculates the
+    usage counts for each jewel level. It then adds constraints to the model to
+    ensure that the jewel usage does not exceed the available slots for each level.
 
     Args:
-        weapon_dict: Dictionary containing weapon information including name and jewel slots
-        talent_list: List of dictionaries containing talent requirements with weights and target levels
-
-    Returns:
-        Dictionary containing the optimal solution with armor pieces, charm, weapon, and jewels
+        model: The constraint programming model used for optimization.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+        jewel_types: A DataFrame containing all jewel data, including names and levels.
+        group_name: The name of the group to filter the jewel types.
+        emplacement_sums: A dictionary containing the sum of available slots for each jewel level.
     """
-    weapon_name = weapon_dict["name"]
+    # Filter jewel types for the specific group
+    filtered_jewel_types = jewel_types.filter(pl.col("group") == group_name)
+    jewel_names = filtered_jewel_types["jewel_name"].unique().to_list()
 
-    # Transform talent list into more usable dictionaries
-    wanted_talents = {item["name"]: item["weight"] for item in talent_list}
-    wanted_talents_objective = {
-        item["name"]: item["target_level"] for item in talent_list
+    # Calculate jewel usage counts for each level using dictionary comprehension
+    jewel_uses = {
+        level: sum(
+            var
+            for jewel_name, var in _vars.jewel_uses_integers[level].items()
+            if jewel_name in jewel_names
+        )
+        for level in range(1, 4)
     }
 
-    # Initialize constraint programming model
-    model = cp_model.CpModel()
+    # Add constraints for each jewel level
+    # Level 3 jewels can only fit in level 3 slots
+    model.Add(jewel_uses[3] <= emplacement_sums["lvl3"])
 
-    # Initialize the optimization variables
-    _vars = OptimizationVariables()
-
-    # Get unique type of armor pieces
-    gear_types = armor["piece"].unique().sort().to_list()
-    # Get weapon data
-    weapon = (
-        weapons.filter(pl.col("name") == weapon_name)
-        .explode("talents")
-        .select(
-            "name",
-            *[
-                pl.col("jewels").struct.field(str(i)).alias(f"jewel_lvl{i}")
-                for i in range(4)
-            ],
-            pl.col("talents").struct.field("name").alias("talent_name"),
-            pl.col("talents").struct.field("lvl").alias("talent_lvl"),
-        )
-    )
-    # Get jewels data
-    all_jewels = jewels.explode("jewel_talent_list").select(
-        pl.col("name").alias("jewel_name"),
-        "jewel_lvl",
-        pl.col("jewel_talent_list").struct.field("name").alias("talent_name"),
-        pl.col("jewel_talent_list").struct.field("lvl").alias("talent_lvl"),
-    )
-    # Get jewel types
-    jewel_types = all_jewels.join(
-        talents.select("group", pl.col("name").alias("talent_name")).unique(),
-        on="talent_name",
-    )
-
-    # BEGIN CONSTRAINTS SETUP
-    for gear_type in gear_types:
-        # Add constraints related to the usage of armor piece and talent levels inherited from the armor pieces
-        # TODO: Separate the variable indicating that the armor piece is equipped in an other function
-        _process_armor_pieces(model=model, _vars=_vars, gear_type=gear_type)
-        # Add constraints related to the amount of jewel emplacement and the size of the jewel emplacement
-        _create_jewel_slots_for_armor_pieces(
-            model=model, _vars=_vars, gear_type=gear_type
-        )
-
-    # Calculate the total jewel emplacement for all armor pieces for each jewel level
-    _calculate_total_armor_jewel_emplacements(
-        model=model, _vars=_vars, gear_types=gear_types
-    )
-
-    # Add constraints related to the usage of charms and the talent levels inherited from the charms
-    # TODO: Separate the variable indicating that the charm is equipped in an other function
-    _process_charms(model=model, _vars=_vars)
-
-    # Add constraints related to the usage of weapon and the talent levels inherited from the weapon
-    _set_weapon_talents(model=model, _vars=_vars, weapon=weapon)
-
-    # Create variables that symbolizes the total number of weapon jewels
-    _create_weapon_jewel_slots(model=model, _vars=_vars, weapon=weapon)
-
-    # Jewels
-    ## Register the number of jewels used
-
-    unique_jewels_names = all_jewels["jewel_name"].unique().sort().to_list()
-    for jewel_name in unique_jewels_names:
-        _register_jewel_usage(
-            model=model, _vars=_vars, jewel_name=jewel_name, all_jewels=all_jewels
-        )
-
-    # Add contraints for maximum number of jewels
-
-    ## Get armor jewel types
-    armor_jewel_types = jewel_types.filter(pl.col("group") == "Equip")
-
-    # Jewels 3
-    nb_of_uses_of_jewel3 = sum(
-        var
-        for jewel_name, var in _vars.jewel_uses_integers[3].items()
-        if jewel_name in armor_jewel_types["jewel_name"].unique().to_list()
-    )
-    # Jewels 3 can only fit in lvl 3
-    model.Add(nb_of_uses_of_jewel3 <= _vars.jewel_emplacement_sums_total_armor["lvl3"])
-
-    # Jewels 2
-    nb_of_uses_of_jewel2 = sum(
-        var
-        for jewel_name, var in _vars.jewel_uses_integers[2].items()
-        if jewel_name in armor_jewel_types["jewel_name"].unique().to_list()
-    )
-    # Jewels 2 can fit in lvl 2, 3
+    # Level 2 jewels can fit in level 2 and 3 slots
     model.Add(
-        nb_of_uses_of_jewel2
-        <= sum(_vars.jewel_emplacement_sums_total_armor[f"lvl{i}"] for i in range(2, 4))
-        - nb_of_uses_of_jewel3
+        jewel_uses[2]
+        <= emplacement_sums["lvl2"] + emplacement_sums["lvl3"] - jewel_uses[3]
     )
-    # Jewels 1
-    nb_of_uses_of_jewel1 = sum(
-        var
-        for jewel_name, var in _vars.jewel_uses_integers[1].items()
-        if jewel_name in armor_jewel_types["jewel_name"].unique().to_list()
-    )
-    # Jewels 1 can fit in lvl 1, 2, 3
+
+    # Level 1 jewels can fit in level 1, 2, and 3 slots
     model.Add(
-        nb_of_uses_of_jewel1
-        <= sum(_vars.jewel_emplacement_sums_total_armor[f"lvl{i}"] for i in range(1, 4))
-        - nb_of_uses_of_jewel3
-        - nb_of_uses_of_jewel2
+        jewel_uses[1]
+        <= emplacement_sums["lvl1"]
+        + emplacement_sums["lvl2"]
+        + emplacement_sums["lvl3"]
+        - jewel_uses[3]
+        - jewel_uses[2]
     )
 
-    ## Get weapon jewel types
-    weapon_jewel_types = jewel_types.filter(pl.col("group") == "Weapon")
-    # Jewels 3
-    nb_of_uses_of_jewel3 = sum(
-        var
-        for jewel_name, var in _vars.jewel_uses_integers[3].items()
-        if jewel_name in weapon_jewel_types["jewel_name"].unique().to_list()
-    )
-    # Jewels 3 can only fit in lvl 3
-    model.Add(nb_of_uses_of_jewel3 <= _vars.jewel_emplacement_sums_total_weapon["lvl3"])
 
-    # Jewels 2
-    nb_of_uses_of_jewel2 = sum(
-        var
-        for jewel_name, var in _vars.jewel_uses_integers[2].items()
-        if jewel_name in weapon_jewel_types["jewel_name"].unique().to_list()
-    )
-    # Jewels 2 can fit in lvl 2, 3
-    model.Add(
-        nb_of_uses_of_jewel2
-        <= sum(
-            _vars.jewel_emplacement_sums_total_weapon[f"lvl{i}"] for i in range(2, 4)
-        )
-        - nb_of_uses_of_jewel3
-    )
+def _compute_talent_sums(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+) -> None:
+    """
+    Compute the sum of talents for each talent type.
 
-    # Jewels 1
-    nb_of_uses_of_jewel1 = sum(
-        var
-        for jewel_name, var in _vars.jewel_uses_integers[1].items()
-        if jewel_name in weapon_jewel_types["jewel_name"].unique().to_list()
-    )
-    # Jewels 1 can fit in lvl 1, 2, 3
-    model.Add(
-        nb_of_uses_of_jewel1
-        <= sum(
-            _vars.jewel_emplacement_sums_total_weapon[f"lvl{i}"] for i in range(1, 4)
-        )
-        - nb_of_uses_of_jewel3
-        - nb_of_uses_of_jewel2
-    )
+    This function iterates over the talent lists and calculates the sum of variables
+    associated with each talent. It then adds these sums as constraints to the model.
 
-    # Compute the talent sums
+    Args:
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+    """
+
     for talent_name, talent_vars in _vars.talent_lists.items():
         var_talent_sum = model.NewIntVar(
             lb=0,
@@ -626,17 +518,26 @@ def solve(
 
         _vars.talent_sums[talent_name] = var_talent_sum
 
-    # Add talent sum cap
-    unique_talent_names = talents["name"].unique().to_list()
-    talents_lvl_max = (
-        talents.explode("levels")
-        .with_columns(
-            pl.col("levels").struct.field("lvl").alias("talent_lvl"),
-            pl.col("levels").struct.field("description").alias("talent_description"),
-        )
-        .filter(pl.col("talent_lvl") == pl.col("talent_lvl").max().over("name"))
-        .select("group", "name", "talent_lvl")
-    )
+
+def _add_talent_sum_cap(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    unique_talent_names: list[str],
+    talents_lvl_max: pl.DataFrame,
+) -> None:
+    """
+    Add a cap to the sum of talents based on maximum talent levels.
+
+    This function iterates over unique talent names and applies a cap to the sum of talents
+    for each talent type. It uses the minimum of the calculated talent sum and the maximum
+    level allowed for that talent, and adds this as a constraint to the model.
+
+    Args:
+        model: The constraint programming model to which the constraints are added.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+        unique_talent_names: A list of unique talent names to be considered.
+        talents_lvl_max: A DataFrame containing the maximum levels for each talent.
+    """
     for talent_name in unique_talent_names:
         # Get the talent max lvl
         individual_max_level = talents_lvl_max.filter(
@@ -658,10 +559,25 @@ def solve(
         # Store the capped talent sum
         _vars.talent_sums_capped[talent_name] = var_talent_sum_capped
 
-    # Set bonus talents
-    group_talent_names = (
-        talents.filter(pl.col("group") == "Group")["name"].unique().to_list()
-    )
+
+def _set_group_talent_minimum_required_levels(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    group_talent_names: list[str],
+) -> None:
+    """
+    Set minimum required levels for group talents.
+
+    This function checks if the sum of capped talents for each group talent name meets the
+    required level. It creates a boolean variable to indicate if the group talent has enough
+    levels and adds constraints to enforce this condition.
+
+    Args:
+        model: The constraint programming model to which the constraints are added.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+        group_talent_names: A list of group talent names to be considered.
+    """
+
     for group_talent_name in group_talent_names:
         data = (
             talents
@@ -682,16 +598,27 @@ def solve(
         ).OnlyEnforceIf(group_has_enough_levels.Not())
         _vars.group_has_enough_level[group_talent_name] = group_has_enough_levels
 
-    # Add set series bonus talents
-    talent_series = (
-        talents.filter(pl.col("group") == "Series")
-        .explode("levels")
-        .select(
-            "name",
-            pl.col("levels").struct.field("lvl").alias("talent_lvl"),
-        )
-    )
-    talent_series_names = talent_series["name"].unique().to_list()
+
+def _set_series_talent_minimum_required_levels(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    talent_series_names: list[str],
+    talent_series: pl.DataFrame,
+) -> None:
+    """
+    Set minimum required levels for talent series.
+
+    This function iterates over each talent series name and checks if the sum of capped talents
+    for each series meets the required levels. It creates boolean variables to indicate if the
+    talent level is more than the inferior level, less than the superior level, and between the
+    inferior and superior levels. Constraints are added to enforce these conditions.
+
+    Args:
+        model: The constraint programming model to which the constraints are added.
+        _vars: An instance of OptimizationVariables containing variables for the optimization process.
+        talent_series_names: A list of talent series names to be considered.
+        talent_series: A DataFrame containing the talent series data.
+    """
     for talent_series_name in talent_series_names:
         # Filter the talent series for the current series name
         unique_serie = talent_series.filter(pl.col("name") == talent_series_name)
@@ -758,7 +685,27 @@ def solve(
             model.Add(var == talent_inferior).only_enforce_if(var_talent_lvl_is_between)
             model.Add(var == 0).only_enforce_if(var_talent_lvl_is_between.Not())
 
-    ## Objective
+
+def _aggregate_all_talents(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    talent_series_names: list[str],
+    group_talent_names: list[str],
+) -> None:
+    """
+    Aggregate all talents into the final talent sums.
+
+    This function processes the talents by iterating over the capped talent sums and the talent series intervals.
+    It creates new integer variables for each talent and adds constraints to the model to ensure that the final
+    talent sums are correctly calculated based on the given conditions.
+
+    Args:
+        model: The constraint programming model to which the constraints are added.
+        _vars: An instance of OptimizationVariables containing the variables used in the model.
+        talent_series_names: A list of talent series names to be processed.
+        group_talent_names: A list of group talent names that have specific level requirements.
+    """
+
     for name, var in _vars.talent_sums_capped.items():
         if name not in _vars.talent_sums_final and name not in talent_series_names:
             newvar = model.NewIntVar(name=f"talent_sums_final_{name}", lb=0, ub=30)
@@ -778,6 +725,28 @@ def solve(
             _vars.talent_sums_final[name] = newvar
             model.Add(_vars.talent_sums_final[name] == sum(var_list))
 
+
+def _create_objective_function(
+    model: cp_model.CpModel,
+    _vars: OptimizationVariables,
+    wanted_talents: dict[str, int],
+    wanted_talents_objective: dict[str, int],
+) -> None:
+    """
+    Create the objective function for the optimization model.
+
+    This function defines the objective function for the constraint programming model.
+    It aims to maximize the number of free jewel emplacements, optimize the number of talents,
+    and apply a strict talent optimization based on the desired talent levels. Additionally,
+    it penalizes any deviation from the target talent levels.
+
+    Args:
+        model: The constraint programming model to which the objective function is added.
+        _vars: An instance of OptimizationVariables containing the variables used in the model.
+        wanted_talents: A dictionary mapping talent names to their respective weights for optimization.
+        wanted_talents_objective: A dictionary mapping talent names to their target levels for optimization.
+    """
+
     # Add additionnal value for free jewels emplacements
     lvl_emplacements = {}
     for lvl in range(1, 4):
@@ -788,7 +757,6 @@ def solve(
     maximize_nb_of_free_jewels = []
     maximize_nb_of_free_jewels.extend(
         (sum(lvl_emplacements[lvl]) - sum(_vars.jewel_uses_integers[lvl].values()))
-        * 10**3
         * 10**lvl
         for lvl in range(1, 4)
     )
@@ -796,34 +764,211 @@ def solve(
     nb_of_talents = sum(_vars.talent_sums_final.values())
 
     # Add optional strict talent optimization
-    talent_objective = (
-        sum(
-            _vars.talent_sums_final[talent] * 10**talent_weight
-            for talent, talent_weight in wanted_talents.items()
-        )
-        * 10**9
+    talent_objective = sum(
+        _vars.talent_sums_final[talent] * 10**talent_weight
+        for talent, talent_weight in wanted_talents.items()
     )
     # Add a penalty if talent lvl is greater than the objective lvl
     abs_diff_vars = []
     for talent_name, talent_var in _vars.talent_sums_final.items():
-        if talent_name in wanted_talents_objective.keys():
+        if talent_name in wanted_talents_objective:
             objective_lvl = wanted_talents_objective[talent_name]
             if objective_lvl == -1:
                 continue
             abs_diff = model.NewIntVar(name=f"abs_diff_{talent_name}", lb=0, ub=100)
             model.AddAbsEquality(abs_diff, talent_var - objective_lvl)
-            abs_diff_vars.append(abs_diff * 10 ** wanted_talents[talent_name] * 10**9)
+            abs_diff_vars.append(abs_diff * 10 ** wanted_talents[talent_name])
 
     model.maximize(
         sum(
             [
-                talent_objective,
+                talent_objective * 10**9,
+                -sum(abs_diff_vars) * 10**9,
+                sum(maximize_nb_of_free_jewels) * 10**3,
                 nb_of_talents,
-                sum(maximize_nb_of_free_jewels),
-                -sum(abs_diff_vars),
             ]
         )
     )
+
+
+def solve(
+    weapon_dict: dict,
+    talent_list: list[dict],
+) -> dict:
+    """
+    Solve the armor optimization problem using constraint programming.
+
+    Args:
+        weapon_dict: Dictionary containing weapon information including name and jewel slots
+        talent_list: List of dictionaries containing talent requirements with weights and target levels
+
+    Returns:
+        Dictionary containing the optimal solution with armor pieces, charm, weapon, and jewels
+    """
+    weapon_name = weapon_dict["name"]
+
+    # Transform talent list into more usable dictionaries
+    wanted_talents = {item["name"]: item["weight"] for item in talent_list}
+    wanted_talents_objective = {
+        item["name"]: item["target_level"] for item in talent_list
+    }
+
+    # Initialize constraint programming model
+    model = cp_model.CpModel()
+
+    # Initialize the optimization variables
+    _vars = OptimizationVariables()
+
+    # Get unique type of armor pieces
+    gear_types = armor["piece"].unique().sort().to_list()
+    # Get weapon data
+    weapon = (
+        weapons.filter(pl.col("name") == weapon_name)
+        .explode("talents")
+        .select(
+            "name",
+            *[
+                pl.col("jewels").struct.field(str(i)).alias(f"jewel_lvl{i}")
+                for i in range(4)
+            ],
+            pl.col("talents").struct.field("name").alias("talent_name"),
+            pl.col("talents").struct.field("lvl").alias("talent_lvl"),
+        )
+    )
+    # Get jewels data
+    all_jewels = jewels.explode("jewel_talent_list").select(
+        pl.col("name").alias("jewel_name"),
+        "jewel_lvl",
+        pl.col("jewel_talent_list").struct.field("name").alias("talent_name"),
+        pl.col("jewel_talent_list").struct.field("lvl").alias("talent_lvl"),
+    )
+    # Get jewel types
+    jewel_types = all_jewels.join(
+        talents.select("group", pl.col("name").alias("talent_name")).unique(),
+        on="talent_name",
+    )
+
+    # Get talents data
+    unique_talent_names = talents["name"].unique().to_list()
+    talents_lvl_max = (
+        talents.explode("levels")
+        .with_columns(
+            pl.col("levels").struct.field("lvl").alias("talent_lvl"),
+            pl.col("levels").struct.field("description").alias("talent_description"),
+        )
+        .filter(pl.col("talent_lvl") == pl.col("talent_lvl").max().over("name"))
+        .select("group", "name", "talent_lvl")
+    )
+    group_talent_names = (
+        talents.filter(pl.col("group") == "Group")["name"].unique().to_list()
+    )
+
+    talent_series = (
+        talents.filter(pl.col("group") == "Series")
+        .explode("levels")
+        .select(
+            "name",
+            pl.col("levels").struct.field("lvl").alias("talent_lvl"),
+        )
+    )
+    talent_series_names = talent_series["name"].unique().to_list()
+
+    # BEGIN CONSTRAINTS SETUP
+    for gear_type in gear_types:
+        # Add constraints related to the usage of armor piece and talent levels inherited from the armor pieces
+        # TODO: Separate the variable indicating that the armor piece is equipped in an other function
+        _process_armor_pieces(model=model, _vars=_vars, gear_type=gear_type)
+        # Add constraints related to the amount of jewel emplacement and the size of the jewel emplacement
+        _create_jewel_slots_for_armor_pieces(
+            model=model, _vars=_vars, gear_type=gear_type
+        )
+
+    # Calculate the total jewel emplacement for all armor pieces for each jewel level
+    _calculate_total_armor_jewel_emplacements(
+        model=model, _vars=_vars, gear_types=gear_types
+    )
+
+    # Add constraints related to the usage of charms and the talent levels inherited from the charms
+    # TODO: Separate the variable indicating that the charm is equipped in an other function
+    _process_charms(model=model, _vars=_vars)
+
+    # Add constraints related to the usage of weapon and the talent levels inherited from the weapon
+    _set_weapon_talents(model=model, _vars=_vars, weapon=weapon)
+
+    # Create variables that symbolizes the total number of weapon jewels
+    _create_weapon_jewel_slots(model=model, _vars=_vars, weapon=weapon)
+
+    # Jewels
+    unique_jewels_names = all_jewels["jewel_name"].unique().sort().to_list()
+    for jewel_name in unique_jewels_names:
+        # Register the number of jewel uses
+        _register_jewel_usage(
+            model=model,
+            _vars=_vars,
+            jewel_name=jewel_name,
+            all_jewels=all_jewels,
+        )
+
+    # Add constraints to ensure that the total number of jewel uses is less than or equal to the total number of jewel emplacements
+    _add_jewel_usage_constraints(
+        model,
+        _vars,
+        jewel_types,
+        "Equip",
+        _vars.jewel_emplacement_sums_total_armor,
+    )
+    _add_jewel_usage_constraints(
+        model,
+        _vars,
+        jewel_types,
+        "Weapon",
+        _vars.jewel_emplacement_sums_total_weapon,
+    )
+
+    # Sum the individual talent levels to have the total talent level inside dedicated integer variables
+    _compute_talent_sums(model=model, _vars=_vars)
+
+    # Cap the maximum talent level for each talent, as it is pointless to maximize talent points past the maximum level
+    _add_talent_sum_cap(
+        model=model,
+        _vars=_vars,
+        unique_talent_names=unique_talent_names,
+        talents_lvl_max=talents_lvl_max,
+    )
+
+    # Group talents need a minimum amount of talents to be activated, they have only one level
+    # If the number of talents is below the lvl, set it to 0
+    _set_group_talent_minimum_required_levels(
+        model=model,
+        _vars=_vars,
+        group_talent_names=group_talent_names,
+    )
+
+    # Series talents are like group talents, but they have more than one level
+    _set_series_talent_minimum_required_levels(
+        model=model,
+        _vars=_vars,
+        talent_series_names=talent_series_names,
+        talent_series=talent_series,
+    )
+
+    # Aggregate all proxy talent sum variables into a single variable
+    _aggregate_all_talents(
+        model=model,
+        _vars=_vars,
+        talent_series_names=talent_series_names,
+        group_talent_names=group_talent_names,
+    )
+
+    # Create objective function
+    _create_objective_function(
+        model=model,
+        _vars=_vars,
+        wanted_talents=wanted_talents,
+        wanted_talents_objective=wanted_talents_objective,
+    )
+
+    # Solve
     solver = cp_model.CpSolver()
     status = solver.solve(model)
 
@@ -835,7 +980,7 @@ def solve(
         cp_model.UNKNOWN: "UNKNOWN",
     }
 
-    # ic(f"Solver status: {solver_statuses[status]}")
+    # Parse solution in a dictionnary
     solution = {"jewels": {}, "weapon": weapon.to_dicts()[0]["name"]}
     for gear_type, var_dict in _vars.use_armor_piece_booleans.items():
         for name, var in var_dict.items():
@@ -844,282 +989,12 @@ def solve(
     for charm, var in _vars.use_charm_booleans.items():
         if solver.value(expression=var) == 1:
             solution["charm"] = charm
-            # display(charms.filter(pl.col("name") == charm))
-    for jewel_lvl, var_dict in _vars.jewel_uses_integers.items():
+    for var_dict in _vars.jewel_uses_integers.values():
         for jewel_name, var in var_dict.items():
             if solver.value(var) > 0:
                 solution["jewels"][jewel_name] = solver.value(var)
 
     return solution
-
-
-def generate_markdown_from_solution(solution: dict) -> str:
-    """
-    Generate a markdown representation from the given solution.
-
-    Args:
-        solution (dict[str, dict[str, int]]): A dictionary containing the solution details,
-            including jewels, weapon, and charm.
-
-    Returns:
-        str: A markdown formatted string representing the solution.
-    """
-
-    solution_jewels = solution["jewels"]
-    weapon_name = solution["weapon"]
-    charm_name = solution["charm"]
-
-    return (
-        (
-            # Create a DataFrame from the solution dictionary for armor pieces
-            df := pl.DataFrame(
-                [
-                    {"name": solution[_type], "type": _type, "order": order}
-                    for order, _type in enumerate(
-                        ["Tête", "Torse", "Bras", "Taille", "Jambes"]
-                    )
-                ],
-            )
-            # Join with armor DataFrame to get talent levels
-            .join(
-                armor,
-                on="name",
-                how="inner",
-            )
-            .sort("order")
-            # Pivot to aggregate talent levels by name
-            .pivot(
-                index="talent_name",
-                on="name",
-                values="talent_level",
-                aggregate_function="sum",
-            )
-            # Join with jewels DataFrame to include jewel talents
-            .join(
-                pl.DataFrame(
-                    [
-                        {"name": key, "quantity": value}
-                        for key, value in solution_jewels.items()
-                    ]
-                    if len(solution_jewels.keys()) > 0
-                    else {"name": "", "quantity": 0}
-                )
-                .join(jewels, on="name", how="inner")
-                .explode("jewel_talent_list")
-                .with_columns(
-                    pl.col("jewel_talent_list")
-                    .struct.field("name")
-                    .alias("talent_name"),
-                    pl.col("jewel_talent_list").struct.field("lvl").alias("talent_lvl"),
-                )
-                .with_columns(
-                    (pl.col("talent_lvl") * pl.col("quantity")).alias("Joyaux"),
-                )
-                .select("talent_name", "Joyaux"),
-                on="talent_name",
-                how="outer",
-            )
-            # Handle missing talent names
-            .with_columns(pl.coalesce("talent_name", "talent_name_right"))
-            .drop("talent_name_right")
-            # Join with weapon talents
-            .join(
-                weapons
-                # Filter for the specific weapon and explode talents
-                .filter(pl.col("name") == weapon_name)
-                .explode("talents")
-                .select(
-                    pl.col("talents").struct.field("name").alias("talent_name"),
-                    pl.col("talents").struct.field("lvl").alias(weapon_name),
-                ),
-                on="talent_name",
-                how="outer",
-            )
-            # Handle missing talent names
-            .with_columns(pl.coalesce("talent_name", "talent_name_right"))
-            .drop("talent_name_right")
-            # Join with charm talents
-            .join(
-                charms.filter(pl.col("name") == charm_name)
-                .select("talent_name", "talent_lvl")
-                .rename({"talent_lvl": charm_name}),
-                on="talent_name",
-                how="outer",
-            )
-            # Handle missing talent names
-            .with_columns(pl.coalesce("talent_name", "talent_name_right"))
-            .drop("talent_name_right")
-        )
-        # Initialize Total column with zeros
-        .with_columns(pl.lit(0).alias("Total"))
-        .fill_null(0)
-        # Calculate the total talent level for each talent
-        .with_columns(
-            pl.struct(df.columns[1:])
-            .alias("Total")
-            .map_elements(lambda s: sum(s.values()))
-            .alias("Total")
-        )
-        .sort("Total")
-        # Join with talents DataFrame to get descriptions
-        .join_asof(
-            talents.explode("levels")
-            .select(
-                pl.col("name").alias("talent_name"),
-                pl.col("levels").struct.field("lvl").alias("Total"),
-                pl.col("levels").struct.field("description").alias("Description"),
-            )
-            .sort("Total"),
-            by="talent_name",
-            on="Total",
-        )
-        # Convert all columns to strings and remove zeros
-        .with_columns(pl.col(col).cast(pl.String).alias(col) for col in df.columns)
-        .with_columns(pl.col(col).str.replace("0", "") for col in df.columns)
-        .with_columns(pl.col("Joyaux").str.replace("0", ""))
-        # Sort by Total and talent name
-        .sort("Total", "talent_name", descending=[True, False])
-        .rename({"talent_name": "Talent"})
-        # Convert to pandas DataFrame and then to markdown
-        .to_pandas()
-        .to_markdown(index=False)
-    )
-
-
-def generate_markdown_for_jewels(solution: dict) -> list[str]:
-    """
-    Generate a markdown representation of jewel data from the given solution.
-
-    This function processes the solution dictionary to extract jewel types and their
-    associated talent groups, prepares armor slots data, and weapon slots data.
-    It returns a list of strings in markdown format representing the jewel information.
-
-    Args:
-        solution (dict): A dictionary containing the solution data with keys for jewels,
-                            armor types, and weapon names.
-
-    Returns:
-        list[str]: A list of strings formatted in markdown representing the jewel data.
-    """
-
-    solution_jewels = solution["jewels"]
-    # Extract jewel types and their associated talent groups
-    jewel_types = (
-        jewels
-        #
-        .explode("jewel_talent_list")
-        .select(
-            "name",
-            pl.col("jewel_talent_list").struct.field("name").alias("jewel_talent_name"),
-        )
-        .join(
-            talents.select(pl.col("name").alias("jewel_talent_name"), "group").unique(),
-            on="jewel_talent_name",
-            how="left",
-        )
-    )
-
-    # Prepare armor slots data from the solution
-    armor_slots = (
-        pl.DataFrame(
-            [
-                {"name": solution[_type], "type": _type, "order": order}
-                for order, _type in enumerate(
-                    ["Tête", "Torse", "Bras", "Taille", "Jambes"]
-                )
-            ],
-        )
-        #
-        .join(
-            armor,
-            on="name",
-            how="inner",
-        )
-        .unique("name")
-        .select(pl.col(f"jewel_{i}").sum() for i in range(1, 4))
-        .unpivot()
-        .sort("variable")
-        .to_dicts()
-    )
-
-    # Prepare weapon slots data based on the weapon name
-    weapon_slots = (
-        weapons
-        #
-        .filter(pl.col("name") == weapon_name)
-        .select(
-            pl.col("jewels").struct.field(str(i)).alias(f"jewel_{str(i)}")
-            for i in range(1, 4)
-        )
-        .unpivot()
-        .sort("variable")
-        .to_dicts()
-    )
-
-    # Generate markdown for armor jewels
-    armor_md = "# **Joyaux armure** \n\n"
-    for row in armor_slots:
-        size = row["variable"].replace("jewel_", "")
-        at_least_one_jewel = False
-        free_slots = row["value"]
-        for name, quantity in solution_jewels.items():
-            # Skip jewels that belong to weapons
-            if (
-                name
-                in jewel_types.filter(pl.col("group") == "Weapon")["name"].to_list()
-            ):
-                continue
-            # Add header for jewel size if not already added
-            if (
-                not at_least_one_jewel
-                and quantity > 0
-                and name.split("[")[-1].replace("]", "") == size
-            ):
-                armor_md += f"### **Joyaux taille {size}**,  slots: {free_slots}\n\n"
-                at_least_one_jewel = True
-            # Add jewel details
-            if name.split("[")[-1].replace("]", "") == size:
-                armor_md += f"* {name} x{quantity}\n\n"
-                free_slots -= quantity
-        # Add free slots information if any slots are left
-        if free_slots > 0:
-            if not at_least_one_jewel:
-                armor_md += f"### **Joyaux taille {size}**,  slots: {free_slots}\n\n"
-            armor_md += f"* *Libre: {free_slots}*\n\n"
-
-    # Generate markdown for weapon jewels
-    weapon_md = "# **Joyaux arme** \n\n"
-    for row in weapon_slots:
-        size = row["variable"].replace("jewel_", "")
-        at_least_one_jewel = False
-        free_slots = row["value"]
-        for name, quantity in solution_jewels.items():
-            # Skip jewels that do not belong to weapons
-            if (
-                name
-                not in jewel_types.filter(pl.col("group") == "Weapon")["name"].to_list()
-            ):
-                continue
-            # Add header for jewel size if not already added
-            if (
-                not at_least_one_jewel
-                and quantity > 0
-                and name.split("[")[-1].replace("]", "") == size
-            ):
-                weapon_md += f"### **Joyaux taille {size}**,  slots: {free_slots}\n\n"
-                at_least_one_jewel = True
-            else:
-                continue
-            # Add jewel details
-            if name.split("[")[-1].replace("]", "") == size:
-                weapon_md += f"* {name} x{quantity}\n\n"
-                free_slots -= quantity
-        # Add free slots information if any slots are left
-        if free_slots > 0:
-            if not at_least_one_jewel:
-                weapon_md += f"### **Joyaux taille {size}**,  slots: {free_slots}\n\n"
-            weapon_md += f"* *Libre: {free_slots}*\n\n"
-    return armor_md, weapon_md
 
 
 if __name__ == "__main__":
