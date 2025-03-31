@@ -49,7 +49,6 @@ def build_solver() -> None:
     gr.Markdown(open("./optimized_header.md", mode="r", encoding="utf-8").read())
     talents_state = gr.State([])
     solution = gr.State({})
-    target_levels = gr.State({})
 
     with gr.Accordion(
         "Tous les talents: Cliquer sur une ligne rajoute le talent aux souhaits",
@@ -222,34 +221,47 @@ def build_solver() -> None:
         row = df.iloc[event.index[0]]
         return tasks + [{"name": row["Talent"], "weight": 1, "target_level": -1}]
 
+    # Add task from dataframe click
     talent_dataframe_display.select(
         add_task_from_dataframe,
         inputs=[talents_state, talent_dataframe_display],
         outputs=talents_state,
     )
+
+    # Add task from dropdown change
     talents_dropdown.change(
         add_task, [talents_state, talents_dropdown], [talents_state, talents_dropdown]
     )
 
     @gr.render(inputs=talents_state)
-    def render_talent_list(task_list):
+    def render_talent_list(task_list: list[dict]) -> None:
+        # Display header with number of talents
         gr.Markdown(f"### Talents ({len(task_list)})")
+
+        # Iterate through each talent in the list
         for task in task_list:
             with gr.Row():
+                # Display talent name (non-interactive)
                 gr.Textbox(
                     task["name"],
                     label="Talent",
                 )
+
+                # Input for target level (-1 means max level)
                 target_level_input = gr.Number(
                     value=task["target_level"],
                     label="Niveau (-1 = max)",
                     interactive=True,
                 )
+
+                # Input for priority weight
                 weight_input = gr.Number(
                     value=task["weight"],
                     label="Priorité (Haute valeur = priorité + haute)",
                     interactive=True,
                 )
+
+                # Update target level when changed
                 target_level_input.change(
                     lambda new_value, tasks, task=task: [
                         t.update({"target_level": new_value}) or t
@@ -261,6 +273,7 @@ def build_solver() -> None:
                     outputs=talents_state,
                 )
 
+                # Update weight when changed
                 weight_input.change(
                     lambda new_value, tasks, task=task: [
                         t.update({"weight": new_value}) or t for t in tasks if t is task
@@ -270,6 +283,7 @@ def build_solver() -> None:
                     outputs=talents_state,
                 )
 
+                # Delete button and handler
                 delete_btn = gr.Button("Retirer", scale=0, variant="stop")
 
                 def delete(task=task):
@@ -279,14 +293,21 @@ def build_solver() -> None:
                 delete_btn.click(delete, None, [talents_state])
 
     gr.Markdown("# Armes")
+    # Get the first weapon type from sorted unique weapon classes
     default_weapon_type = weapons["class"].unique().sort().to_list()[0]
+
+    # Get the first weapon name from the filtered and sorted weapons of the default type
     default_weapon = (
         weapons.filter(pl.col("class") == default_weapon_type)["name"]
         .unique()
         .sort()
         .to_list()[0]
     )
+
+    # Get the complete weapon data dictionary for the default weapon
     default_weapon_data = weapons.filter(pl.col("name") == default_weapon).to_dicts()[0]
+
+    # Initialize the weapon state with the default weapon data
     selected_weapon = gr.State(default_weapon_data)
     with gr.Row():
         dropdown_weapon_type = gr.Dropdown(
@@ -389,7 +410,6 @@ def build_solver() -> None:
                     inputs=var_piece,
                     outputs=markdown_jewel_list,
                 )
-            piece = armor.filter(pl.col("name") == armor_piece)
 
     gr.Markdown("---")
     with gr.Row():
