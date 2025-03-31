@@ -1,3 +1,5 @@
+> [**Note: If you are on Github, visit this page instead to have proper display of images**](https://huggingface.co/spaces/Nnugget/MH_Wilds_tools/blob/main/EXPLANATION.md)
+
 # Building a multi-objective gear optimization system for a popular video game using Mixed Integer Programming - Monster Hunter Wilds
 
 In this article, we'll dive deep into the core mechanics of Monster Hunter's equipment and skill system. Understanding these fundamentals is crucial before we explore how to optimize and build the perfect gear sets. We'll examine how armor pieces, skills, and their synergies work together to create unique hunting experiences.
