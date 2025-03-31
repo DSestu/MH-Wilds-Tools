@@ -1,12 +1,12 @@
 > [**Note: If you are on Github, visit this page instead to have proper display of images**](https://huggingface.co/spaces/Nnugget/MH_Wilds_tools/blob/main/EXPLANATION.md)
 
-# Building a multi-objective gear optimization system for a popular video game using Mixed Integer Programming - Monster Hunter Wilds
+# Building a multi-objective gear optimization system for a popular video game using Constraint Programming - Monster Hunter Wilds
 
 In this article, we'll dive deep into the core mechanics of Monster Hunter's equipment and skill system. Understanding these fundamentals is crucial before we explore how to optimize and build the perfect gear sets. We'll examine how armor pieces, skills, and their synergies work together to create unique hunting experiences.
 
-To tackle the complex challenge of finding optimal gear combinations, we'll leverage the power of mixed integer programming (MIP). We'll progressively explore this optimization technique through multiple difficulty levels - starting with basic armor selection, then incorporating skills, and finally addressing advanced constraints like decoration slots etc. This mathematical approach will help us discover the most efficient gear combinations while satisfying our desired skill requirements.
+To tackle the complex challenge of finding optimal gear combinations, we'll leverage the power of constraint programming (CP). We'll progressively explore this optimization technique through multiple difficulty levels - starting with basic armor selection, then incorporating skills, and finally addressing advanced constraints like decoration slots etc. This mathematical approach will help us discover the most efficient gear combinations while satisfying our desired skill requirements.
 
-While we use a video game as an example here, the mixed integer programming approach we'll explore can be applied to many real-world optimization problems. Some practical applications include:
+While we use a video game as an example here, the constraint programming approach we'll explore can be applied to many real-world optimization problems. Some practical applications include:
 
 - Supply chain optimization: selecting the best combination of warehouses and transportation routes
 - Manufacturing: optimizing production schedules and resource allocation
@@ -162,24 +162,26 @@ This is a pure operational research task, implemented as a game.
 
 This can be done by a human, but optimal solutions are very hard to find, especially as the game contents expand through numerous updates.
 
-This is why we will drill into operational research, via constraint programming, and more precisely via Mixed Integer Programming.# Using Mixed Integer Programming for Monster Hunter Wilds gear optimization
+This is why we will drill into operational research, via Constraint Programming (CP).
+
+# Using Constraint Programming for Monster Hunter Wilds gear optimization
 
 ## Setup
 
 For this project, we are simply going to use:
 
-- Google OR-Tools for Mixed Integer Programming
+- Google OR-Tools for Constraint Programming
 - Polars for dataframe manipulation
 - Pandas for some `.to_markdown()` prints
 - Arrow for Polars -> Pandas transformations
 
-Data collection on which the multiple datasets are based on won't be covered here, as we primarily focus on the MIP part. However, those were scraped from Kiranico (in French) using Selenium.
+Data collection on which the multiple datasets are based on won't be covered here, as we primarily focus on the CP part. However, those were scraped from Kiranico (in French) using Selenium.
 
-## What is Mixed Integer Programming?
+## What is Constraint Programming?
 
-Mixed Integer Programming (MIP) is a mathematical optimization technique used to solve complex problems where some or all variables must be integers. It's particularly useful for problems involving discrete choices, like selecting armor pieces in Monster Hunter Wilds.
+Constraint Programming (CP) is a mathematical optimization technique used to solve complex problems by specifying constraints that must be satisfied. It's particularly useful for problems involving discrete choices, like selecting armor pieces in Monster Hunter Wilds.
 
-### Key characteristics of MIP
+### Key characteristics of CP
 
 1. Variables can be:
    - Integer (whole numbers)
@@ -188,18 +190,18 @@ Mixed Integer Programming (MIP) is a mathematical optimization technique used to
 2. The problem is defined by:
    - An objective function to maximize or minimize
    - A set of constraints that must be satisfied
-   - Bounds on variables
+   - Domains for variables
 
-### Why is MIP original and useful?
+### Why is CP original and useful?
 
 1. **Declarative approach**
    - Instead of writing step-by-step instructions
    - You describe WHAT you want, not HOW to get it
    - The solver figures out the solution path
 
-2. **Guaranteed optimality**
-   - When a solution is found, it's mathematically proven to be optimal
-   - No need to wonder if a better solution exists
+2. **Guaranteed feasibility**
+   - When a solution is found, it satisfies all constraints
+   - No need to wonder if constraints are violated
 
 3. **Complex constraints**
    - Can handle hundreds or thousands of interrelated constraints
@@ -207,22 +209,21 @@ Mixed Integer Programming (MIP) is a mathematical optimization technique used to
    - Naturally models "if-then" relationships
 
 4. **Performance**
-   - Modern MIP solvers are highly optimized
-   - Can solve problems with millions of variables
+   - Modern CP solvers are highly optimized
+   - Can solve problems with large numbers of constraints
    - Much faster than brute force approaches
 
-## How does MIP solve Monster Hunter Wilds gear optimization?
+## How does CP solve Monster Hunter Wilds gear optimization?
 
-The power of MIP lies in its declarative approach to problem-solving. Instead of manually testing countless gear combinations, we:
+The power of CP lies in its declarative approach to problem-solving. Instead of manually testing countless gear combinations, we:
 
 1. Define the problem mathematically through:
-   - Integer variables representing armor pieces, weapons, and charms
+   - Variables representing armor pieces, weapons, and charms
    - Constraints that model Wilds' equipment mechanics and skill system
-   - An objective function to maximize hunter effectiveness
 
 2. Let specialized solvers find the optimal loadout
 
-The key challenge is accurately modeling Monster Hunter Wilds' intricate equipment system as a mathematical optimization problem. This includes:
+The key challenge is accurately modeling Monster Hunter Wilds' intricate equipment system as a constraint satisfaction problem. This includes:
 
 - Representing each piece of gear and their unique properties
 - Encoding both group skills and series skills requirements
@@ -231,29 +232,29 @@ The key challenge is accurately modeling Monster Hunter Wilds' intricate equipme
 
 In the following sections, we'll build this model step by step, starting with basic examples and progressively adding complexity to capture the full depth of Monster Hunter Wilds' gear mechanics.
 
-## Basics of MIP
+## Basics of CP
 
 In this very basic example, I will show you how to model a very simple problem: finding the maximum of a constrained integer variable.
 
 First we have to define a constraint programming model:
 
-![](./doc/code/basic_instantiate_model.png)
+![Basic model instantiation](./doc/code/basic_instantiate_model.png)
 
 Then, we define an integer variable that has an upper bound and a lower bound. We will give an arbitrary high upper bound of 100.
 
-![](./doc/code/basic_define_my_var.png)
+![Define variable with bounds](./doc/code/basic_define_my_var.png)
 
 Here, we will add a constraint that will force the variable to be less than or equal to 50.
 
-![](./doc/code/basic_constraint.png)
+![Add constraint](./doc/code/basic_constraint.png)
 
 Finally, we will define our objective function. Here we want to find the solution that maximizes `my_var` value, while fulfilling model constraints.
 
-![](./doc/code/basic_objective.png)
+![Define objective function](./doc/code/basic_objective.png)
 
 Finally, we will instantiate a solver, solve the model and print the solution.
 
-![](./doc/code/basic_solution.png)
+![Solve and print solution](./doc/code/basic_solution.png)
 
 This gives the following output:
 
@@ -290,11 +291,11 @@ For example, with 3 charms:
 - Valid: [1,0,0] - First charm equipped
 - Invalid: [1,1,0] - Cannot equip multiple charms
 
-![](./doc/code/basic_charm_equipped.png)
+![Basic charm equipped constraint](./doc/code/basic_charm_equipped.png)
 
 This produces the following output:
 
-```
+```raw
 Charm Talisman anti-immobilization is equipped
 ```
 
@@ -321,7 +322,7 @@ We sum the skill points in this example because we want to:
 - Make it easy to maximize total skill points in the objective function
 - Enable constraints based on total skill point thresholds
 
-![](./doc/code/full_charm_solution.png)
+![Full charm solution implementation](./doc/code/full_charm_solution.png)
 
 The output is the following:
 
@@ -335,7 +336,7 @@ This same approach of limiting equipped pieces to 1 and tracking skills in a reg
 
 You can see the implementation in the code below:
 
-![](./doc/code/register_gear.png)
+![Register gear implementation](./doc/code/register_gear.png)
 
 ### Capping the maximum level of skills
 
@@ -352,7 +353,7 @@ To implement this constraint in our optimization system:
 This ensures the solver won't waste resources trying to exceed a skill's maximum level, since any additional points beyond the cap won't increase the capped value.
 In order to do this, we add this part in the code:
 
-![](./doc/code/capping_skill_levels.png)
+![Skill level capping implementation](./doc/code/capping_skill_levels.png)
 
 Then, we must use those new proxy variables in the objective function, so
 
@@ -391,7 +392,7 @@ Group skills require a minimum number of skill points to activate. We handle thi
 
 This approach ensures group skills are properly managed in our optimization process, only contributing when their activation requirements are met.
 
-![](./doc/code/group_skill_threshold.png)
+![Group skill threshold implementation](./doc/code/group_skill_threshold.png)
 
 We haven't yet created the master skill proxy variables that will unify all skill types in our optimization. This is because we first need to implement the series skill constraints and their corresponding proxy variables.
 
@@ -447,7 +448,7 @@ One key aspect here is that we have multiple pairwise thresholds. So, what we do
 2. This same variable == 0 if the skill sum is not within range
 3. We consolidate all these individual threshold-skill-sums into a single sum with the `series_skill_sum_capped` proxy variable.
 
-![](./doc/code/series_skill_solution.png)
+![Series skill solution implementation](./doc/code/series_skill_solution.png)
 
 ### Unifying standard, group, and series skills
 
@@ -457,7 +458,7 @@ To optimize our objective function effectively, we need a unified approach that 
 
 The process of unifying these different skill types is straightforward and involves unifying those variables in the same place:
 
-![](./doc/code/unify_skills.png)
+![Unified skills implementation](./doc/code/unify_skills.png)
 
 ### Jewels
 
@@ -484,7 +485,7 @@ To implement these rules in our optimization model, we need to handle two main c
 
 First, let's prepare the data prior to registering empty jewel slots
 
-![](./doc/code/jewel_data_preparation.png)
+![Jewel data preparation](./doc/code/jewel_data_preparation.png)
 
 This gives us a dataset with the following form
 
@@ -498,7 +499,7 @@ This gives us a dataset with the following form
 
 First, we will prepare the registry entries to store the amount of jewel emplacements we have at our disposal:
 
-![](./doc/code/jewel_preparation_create_registry.png)
+![Jewel preparation registry creation](./doc/code/jewel_preparation_create_registry.png)
 
 For each armor piece and jewel type combination:
 
@@ -507,11 +508,11 @@ For each armor piece and jewel type combination:
 - If equipped: slot count matches the armor's data
 - If not equipped: slot count is zero
 
-![](./doc/code/jewel_preparation_register_emplacement_lists.png)
+![Jewel emplacement list registration](./doc/code/jewel_preparation_register_emplacement_lists.png)
 
 Now, we need to aggregate the total number of jewel slots, for each jewel type:
 
-![](./doc/code/jewel_aggregate_jewel_emplacement_counts.png)
+![Jewel emplacement count aggregation](./doc/code/jewel_aggregate_jewel_emplacement_counts.png)
 
 At this point, we have created variables that track the total number of available jewel slots of each type (1, 2, and 3) based on the armor pieces currently equipped.
 
@@ -529,7 +530,7 @@ The system operates under several constraints. The total number of jewels used c
 
 First, we are going to prepare the jewel data:
 
-![](./doc/code/jewer_preparation_datasheets.png)
+![Jewel preparation datasheets](./doc/code/jewer_preparation_datasheets.png)
 
 This gives us the following dataset:
 
@@ -545,11 +546,11 @@ Now, we will create variables that indicate how many of each jewel we are going 
 
 We will also associate the fact that we benefit from skill points from one or multiple jewel usages.
 
-![](./doc/code/jewel_register_each_one.png)
+![Jewel registration implementation](./doc/code/jewel_register_each_one.png)
 
 Now, we need to make sure that the amount of jewel uses doesn't exceed the amount of jewel slots.
 
-![](./doc/code/jewel_usage_constraints.png)
+![Jewel usage constraints](./doc/code/jewel_usage_constraints.png)
 
 ## Objective function
 
@@ -572,42 +573,32 @@ In the case that we are not able to achieve the max skill level on all asked ski
 
 We will add weights in our objective function in order to achieve that:
 
-![](./doc/code/objective_only_skill.png)
-
 ### Maximizing the number of free jewel emplacements
 
 Here, we are going to add a bonus to the objective function in order to find solutions that maximize the number of free jewel-3 emplacements, then the number of free jewel-2 emplacements, and finally the number of free jewel-1 emplacements.
-
-![](./doc/code/objective_free_jewel_emplacements.png)
 
 ### Maximizing the number of bonus skills
 
 Finally, if there are still multiple solutions, prioritize the ones that provide more additional skills.
 
-![](./doc/code/total_skill_points.png)
-
 ### Building the objective function
 
 To ensure each sub-objective is strictly prioritized over the next one, we multiply each objective by different powers of 10. This creates a clear hierarchy where even the maximum value of a lower priority objective cannot influence the outcome of a higher priority objective.
 
-![](./doc/code/final_objective_function.png)
-
 # Conclusion
 
-In this exploration of optimization techniques for Monster Hunter equipment loadouts, we've developed a sophisticated approach to solving a complex multi-objective optimization problem. Our solution leverages integer linear programming to handle the intricate constraints of armor and decoration combinations while maintaining a clear hierarchy of optimization goals.
+In this exploration of optimization techniques for Monster Hunter equipment loadouts, we've developed an approach to solving a complex multi-objective optimization problem. Our solution leverages constraint programming to handle the intricate constraints of armor and decoration combinations while maintaining a clear hierarchy of optimization goals.
 
 The key innovations in our approach include:
 
 1. A flexible constraint system that accurately models the game's equipment rules, including armor piece restrictions and decoration slot limitations
 
-2. A hierarchical objective function that intelligently prioritizes different aspects of the build:
+2. A hierarchical objective function that prioritizes different aspects of the build:
    - Primary focus on achieving desired skill levels
    - Secondary consideration for skill priority weights
    - Optimization of jewel slot efficiency
    - Maximization of bonus skills as a final criterion
 
-3. A mathematical framework that ensures strict prioritization between objectives using power-of-10 multipliers, preventing lower-priority goals from interfering with more important ones
+This approach not only offers practical benefits for Monster Hunter players but also illustrates how gaming optimization problems can be tackled using mathematical programming techniques. The method we've crafted could be adapted to similar challenges in other games or fields where resource allocation and multiple objectives need to be balanced.
 
-This solution not only provides practical value for Monster Hunter players but also demonstrates how real-world gaming optimization problems can be solved using mathematical programming techniques. The approach we've developed could be adapted to similar optimization challenges in other games or domains where resource allocation and multiple competing objectives need to be balanced.
-
-The implementation shows that even complex gaming optimization problems can be solved efficiently when properly modeled using the right mathematical tools and optimization techniques.
+The implementation demonstrates that even complex gaming optimization problems can be addressed effectively when accurately modeled with the appropriate mathematical tools and optimization strategies.
