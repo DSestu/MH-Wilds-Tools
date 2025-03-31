@@ -36,6 +36,8 @@ Check here [the installation instructions.](https://docs.astral.sh/uv/getting-st
 uv run gradio app.py
 ```
 
+Note: The `requirements.txt` file is just for Hugging face space setup.
+
 ## How It Works ⚙️
 
 1. Select your desired skills
