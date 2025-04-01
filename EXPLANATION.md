@@ -573,17 +573,25 @@ In the case that we are not able to achieve the max skill level on all asked ski
 
 We will add weights in our objective function in order to achieve that:
 
+![](./doc/code/objective_only_skill.png)
+
 ### Maximizing the number of free jewel emplacements
 
 Here, we are going to add a bonus to the objective function in order to find solutions that maximize the number of free jewel-3 emplacements, then the number of free jewel-2 emplacements, and finally the number of free jewel-1 emplacements.
+
+![](./doc/code/objective_free_jewel_emplacements.png)
 
 ### Maximizing the number of bonus skills
 
 Finally, if there are still multiple solutions, prioritize the ones that provide more additional skills.
 
+![](./doc/code/total_skill_points.png)
+
 ### Building the objective function
 
 To ensure each sub-objective is strictly prioritized over the next one, we multiply each objective by different powers of 10. This creates a clear hierarchy where even the maximum value of a lower priority objective cannot influence the outcome of a higher priority objective.
+
+![](./doc/code/final_objective_function.png)
 
 # Conclusion
 
