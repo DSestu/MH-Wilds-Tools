@@ -4,6 +4,8 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import NestedCompleter
 from prompt_toolkit.styles import Style
 from rich import traceback
+from rich.console import Console
+from rich.markdown import Markdown
 
 from .scraper import (
     get_all_charms,
@@ -13,7 +15,29 @@ from .scraper import (
     scrape_all_armors,
 )
 
+console = Console()
 traceback.install()
+
+help_str = """
+# **Available commands:**
+
+## **scrape**:
+
+- all     : Scrape all game data (quests, armors, charms, jewels, skills)
+- quests  : Scrape only quest data
+- armors  : Scrape only armor data
+- charms  : Scrape only charm data
+- jewels  : Scrape only jewel data
+- skills  : Scrape only skill data
+
+## **app**:
+- start   : Start the application
+- stop    : Stop the application
+
+## **Other**:
+- exit    : Exit the application
+- help    : Display this help message
+"""
 
 COMMANDS_TREE = {
     "help": None,
@@ -53,7 +77,7 @@ async def command_dispatcher(command: str) -> None:
 
     match main_command:
         case "help":
-            print("Available commands: ", ", ".join(COMMANDS_TREE.keys()))
+            console.print(Markdown(help_str))
             return
         case "scrape":
             match subcommand:
@@ -108,22 +132,17 @@ async def main():
         enable_history_search=True,
     )
 
-    print("""
-    Welcome to MH Wilds Tools!
+    console.print(
+        Markdown(f"""
+# Welcome to MH Wilds Tools scraper CLI!
 
-    Available commands:
-    - scrape all     : Scrape all game data (quests, armors, charms, jewels, skills)
-    - scrape quests  : Scrape only quest data
-    - scrape armors  : Scrape only armor data
-    - scrape charms  : Scrape only charm data
-    - scrape jewels  : Scrape only jewel data
-    - scrape skills  : Scrape only skill data
-    - app start      : Start the application
-    - app stop       : Stop the application
-    - exit           : Exit the application
+> The goal of this CLI is to provide a way to scrape data from Kiranico in order to update the app database.
 
-    Type any command to begin!
+{help_str}
+
+Type any command to begin!
     """)
+    )
     while True:
         try:
             text = await session.prompt_async(

@@ -22,7 +22,7 @@ dependencies = [
 
 [project.scripts]
 app = "MH_Wilds_tools.app:main"
-mhwt = "MH_Wilds_tools.entrypoints:entrypoint"
+scraper = "MH_Wilds_tools.entrypoints:entrypoint"
 
 [build-system]
 requires = ["hatchling"]

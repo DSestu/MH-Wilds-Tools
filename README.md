@@ -35,13 +35,13 @@ Check here [the installation instructions.](https://docs.astral.sh/uv/getting-st
 ### Run the app
 
 ```{bash}
-uv run gradio app.py
+uv run app
 ```
 
 ### Run the scraper CLI
 
 ```bash
-uv run mhwt
+uv run scraper
 scrape all # or specific dataset
 ```
 
