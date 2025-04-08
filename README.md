@@ -32,8 +32,17 @@ Check here [the installation instructions.](https://docs.astral.sh/uv/getting-st
 
 ## Run
 
+### Run the app
+
 ```{bash}
 uv run gradio app.py
+```
+
+### Run the scraper CLI
+
+```bash
+uv run mhwt
+scrape all # or specific dataset
 ```
 
 Note: The `requirements.txt` file is just for Hugging face space setup.

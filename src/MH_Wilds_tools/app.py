@@ -1,11 +1,11 @@
 import gradio as gr
 import polars as pl
 
-from display import (
+from .display import (
     generate_markdown_for_jewels,
     generate_markdown_from_solution,
 )
-from solver import solve
+from .solver import solve
 
 quests_parquet_path = "data/quests.parquet"
 quests_dataframe = (
@@ -436,7 +436,11 @@ with gr.Blocks() as demo:
         quest_rewards()
 
 
-if __name__ == "__main__":
+def main():
     demo.launch(
         debug=True,
     )
+
+
+if __name__ == "__main__":
+    main()
