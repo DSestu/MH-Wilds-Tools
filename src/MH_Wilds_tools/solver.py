@@ -538,7 +538,7 @@ def _add_talent_sum_cap(
         unique_talent_names: A list of unique talent names to be considered.
         talents_lvl_max: A DataFrame containing the maximum levels for each talent.
     """
-    for talent_name in unique_talent_names:
+    for talent_name in _vars.talent_sums.keys():
         # Get the talent max lvl
         individual_max_level = talents_lvl_max.filter(
             pl.col("name") == talent_name

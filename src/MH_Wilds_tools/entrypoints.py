@@ -37,8 +37,12 @@ help_str = """
 ## **Other**:
 - exit    : Exit the application
 - help    : Display this help message
-"""
 
+
+Note: To deploy on Hugging Face, create a symbolic link to app.py in the root:
+Linux/Mac: ln -s src/MH_Wilds_tools/app.py app.py
+Windows: mklink app.py src\MH_Wilds_tools\app.py
+"""
 COMMANDS_TREE = {
     "help": None,
     "exit": None,
